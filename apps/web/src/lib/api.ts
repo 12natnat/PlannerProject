@@ -1,0 +1,33 @@
+import { useAuthStore } from '../stores/authStore';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api/v1';
+
+export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const { accessToken, logout } = useAuthStore.getState();
+  
+  const headers = new Headers(options.headers || {});
+  headers.set('Content-Type', 'application/json');
+  
+  if (accessToken) {
+    headers.set('Authorization', `Bearer ${accessToken}`);
+  }
+
+  const response = await fetch(`${API_URL}${endpoint}`, {
+    ...options,
+    headers,
+  });
+
+  if (response.status === 401) {
+    // Basic implementation: logout on 401. 
+    // In a real app, this should try to use the refresh token first.
+    logout();
+    throw new Error('Unauthorized');
+  }
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || 'An error occurred during the request');
+  }
+
+  return response.json();
+}

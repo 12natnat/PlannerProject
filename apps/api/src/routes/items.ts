@@ -1,0 +1,149 @@
+import { FastifyInstance } from 'fastify';
+import prisma from '../lib/prisma';
+import { authenticate, requireRole } from '../middleware/auth';
+
+export default async function itemsRoutes(server: FastifyInstance) {
+  // Get all items
+  server.get('/api/v1/items', { preValidation: [authenticate] }, async (request, reply) => {
+    const items = await prisma.item.findMany({
+      orderBy: { itemName: 'asc' },
+    });
+    return reply.send({ data: items });
+  });
+
+  // Search items
+  server.get('/api/v1/items/search', { preValidation: [authenticate] }, async (request, reply) => {
+    const { q } = request.query as { q?: string };
+    if (!q || q.length < 2) {
+      return reply.send({ data: [] });
+    }
+
+    const items = await prisma.item.findMany({
+      where: {
+        OR: [
+          { itemCode: { contains: q } },
+          { itemName: { contains: q } }
+        ]
+      },
+      take: 20,
+    });
+    return reply.send({ data: items });
+  });
+
+  // Get single item
+  server.get('/api/v1/items/:id', { preValidation: [authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const item = await prisma.item.findUnique({ where: { id } });
+
+    if (!item) {
+      return reply.code(404).send({ error: 'Not Found', message: 'Item not found' });
+    }
+
+    return reply.send({ data: item });
+  });
+
+  // Create item
+  server.post(
+    '/api/v1/items',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    async (request, reply) => {
+      const { itemCode, itemName, unit } = request.body as any;
+
+      if (!itemCode || !itemName || !unit) {
+        return reply.code(400).send({ error: 'Bad Request', message: 'itemCode, itemName, and unit are required' });
+      }
+
+      const existingItem = await prisma.item.findUnique({ where: { itemCode } });
+      if (existingItem) {
+        return reply.code(409).send({ error: 'Conflict', message: 'Item code already exists' });
+      }
+
+      const newItem = await prisma.item.create({
+        data: { itemCode, itemName, unit },
+      });
+
+      // Audit Log
+      await prisma.auditLog.create({
+        data: {
+          userId: request.user!.id,
+          action: 'CREATE',
+          entityType: 'Item',
+          entityId: newItem.id,
+          dataAfter: newItem as any,
+        },
+      });
+
+      return reply.code(201).send({ data: newItem });
+    }
+  );
+
+  // Update item
+  server.put(
+    '/api/v1/items/:id',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const { itemCode, itemName, unit } = request.body as any;
+
+      const existingItem = await prisma.item.findUnique({ where: { id } });
+      if (!existingItem) {
+        return reply.code(404).send({ error: 'Not Found', message: 'Item not found' });
+      }
+
+      if (itemCode && itemCode !== existingItem.itemCode) {
+        const codeExists = await prisma.item.findUnique({ where: { itemCode } });
+        if (codeExists) {
+          return reply.code(409).send({ error: 'Conflict', message: 'Item code already exists' });
+        }
+      }
+
+      const updatedItem = await prisma.item.update({
+        where: { id },
+        data: { itemCode, itemName, unit },
+      });
+
+      // Audit Log
+      await prisma.auditLog.create({
+        data: {
+          userId: request.user!.id,
+          action: 'UPDATE',
+          entityType: 'Item',
+          entityId: updatedItem.id,
+          dataBefore: existingItem as any,
+          dataAfter: updatedItem as any,
+        },
+      });
+
+      return reply.send({ data: updatedItem });
+    }
+  );
+
+  // Delete item
+  server.delete(
+    '/api/v1/items/:id',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      const existingItem = await prisma.item.findUnique({ where: { id } });
+      if (!existingItem) {
+        return reply.code(404).send({ error: 'Not Found', message: 'Item not found' });
+      }
+
+      await prisma.item.delete({ where: { id } });
+
+      // Audit Log
+      await prisma.auditLog.create({
+        data: {
+          userId: request.user!.id,
+          action: 'DELETE',
+          entityType: 'Item',
+          entityId: id,
+          dataBefore: existingItem as any,
+        },
+      });
+
+      return reply.send({ message: 'Item deleted successfully' });
+    }
+  );
+}

@@ -1,0 +1,228 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  USER
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      UserRole @default(USER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  auditLogs     AuditLog[]
+  notifications Notification[]
+  fgStocks      FGStock[]
+  wips          WIP[]
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+// ============================================
+// MASTER DATA
+// ============================================
+
+model Item {
+  id        String   @id @default(cuid())
+  itemCode  String   @unique
+  itemName  String
+  unit      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  dailySchedules  DailySchedule[]
+  weeklySchedules WeeklySchedule[]
+  fgStocks        FGStock[]
+  wips            WIP[]
+
+  @@index([itemCode])
+  @@index([itemName])
+  @@map("items")
+}
+
+// ============================================
+// DEMAND / SCHEDULE
+// ============================================
+
+model DailySchedule {
+  id        String   @id @default(cuid())
+  date      DateTime @db.Date
+  shift     Int // 1, 2, or 3
+  itemId    String
+  quantity  Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([date, shift, itemId])
+  @@index([date, shift])
+  @@index([itemId])
+  @@map("daily_schedules")
+}
+
+model WeeklySchedule {
+  id            String   @id @default(cuid())
+  year          Int
+  weekNumber    Int // 1-26
+  weekStartDate DateTime @db.Date
+  weekEndDate   DateTime @db.Date
+  itemId        String
+  quantity      Float
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([year, weekNumber, itemId])
+  @@index([year, weekNumber])
+  @@index([itemId])
+  @@map("weekly_schedules")
+}
+
+// ============================================
+// STOCK & INVENTORY
+// ============================================
+
+model FGStock {
+  id        String    @id @default(cuid())
+  itemId    String    @unique // Unique karena hanya 1 record per item (overwrite)
+  quantity  Float
+  date      DateTime  @db.Date
+  shift     Int? // Optional
+  notes     String?   @db.Text
+  updatedBy String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Relations
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [updatedBy], references: [id])
+
+  @@index([itemId])
+  @@index([date])
+  @@map("fg_stocks")
+}
+
+// ============================================
+// WORK IN PROGRESS (WIP)
+// ============================================
+
+enum WIPStatus {
+  IN_PROGRESS
+  ON_HOLD
+  DELAYED
+  COMPLETED
+}
+
+model WIP {
+  id              String    @id @default(cuid())
+  itemId          String
+  location        String // Mesin-01, Assembly Line, etc.
+  quantity        Float
+  progressPercent Int       @default(0) // 0-100
+  date            DateTime  @db.Date
+  shift           Int // 1, 2, or 3
+  estimatedFinish DateTime  @db.Date
+  status          WIPStatus @default(IN_PROGRESS)
+  notes           String?   @db.Text
+  updatedBy       String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [updatedBy], references: [id])
+
+  @@unique([itemId, location]) // Unique per item + location (overwrite)
+  @@index([itemId])
+  @@index([location])
+  @@index([status])
+  @@index([date, shift])
+  @@map("wips")
+}
+
+// ============================================
+// AUDIT LOG
+// ============================================
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+}
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  userId     String
+  action     AuditAction
+  entityType String // "FGStock", "WIP", "DailySchedule", etc.
+  entityId   String
+  dataBefore Json? // Data sebelum perubahan
+  dataAfter  Json? // Data setelah perubahan
+  notes      String?     @db.Text
+  createdAt  DateTime    @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================
+// NOTIFICATIONS
+// ============================================
+
+enum NotificationType {
+  SHORTAGE
+  DELAY
+  STALE_DATA
+  INFO
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String           @db.Text
+  itemCode  String?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}

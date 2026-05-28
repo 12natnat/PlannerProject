@@ -1,0 +1,32 @@
+{
+  "name": "pdits-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production Demand & Inventory Tracking System",
+  "scripts": {
+    "dev": "pnpm --parallel --filter web --filter api dev",
+    "dev:web": "pnpm --filter web dev",
+    "dev:api": "pnpm --filter api dev",
+    "build": "pnpm --filter shared build && pnpm --filter web build && pnpm --filter api build",
+    "build:web": "pnpm --filter web build",
+    "build:api": "pnpm --filter api build",
+    "test": "pnpm --recursive test",
+    "lint": "pnpm --recursive lint",
+    "db:migrate": "pnpm --filter api prisma migrate dev",
+    "db:studio": "pnpm --filter api prisma studio",
+    "db:generate": "pnpm --filter api prisma generate",
+    "db:deploy": "pnpm --filter api prisma migrate deploy"
+  },
+  "keywords": [
+    "inventory",
+    "tracking",
+    "production",
+    "pwa"
+  ],
+  "author": "PDITS Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}

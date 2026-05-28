@@ -1,0 +1,89 @@
+import { FastifyInstance } from 'fastify';
+import bcrypt from 'bcryptjs';
+import prisma from '../lib/prisma';
+import { authenticate, requireRole } from '../middleware/auth';
+
+export default async function usersRoutes(server: FastifyInstance) {
+  // Get all users (Super Admin only)
+  server.get(
+    '/api/v1/users',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN'])] },
+    async (request, reply) => {
+      const users = await prisma.user.findMany({
+        select: { id: true, name: true, email: true, role: true, isActive: true, createdAt: true },
+      });
+      return reply.send({ data: users });
+    }
+  );
+
+  // Create user (Super Admin only)
+  server.post(
+    '/api/v1/users',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN'])] },
+    async (request, reply) => {
+      const { name, email, password, role } = request.body as any;
+
+      if (!name || !email || !password) {
+        return reply.code(400).send({ error: 'Bad Request', message: 'Name, email, and password are required' });
+      }
+
+      const existingUser = await prisma.user.findUnique({ where: { email } });
+      if (existingUser) {
+        return reply.code(409).send({ error: 'Conflict', message: 'Email already exists' });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      const newUser = await prisma.user.create({
+        data: {
+          name,
+          email,
+          password: hashedPassword,
+          role: role || 'USER',
+        },
+        select: { id: true, name: true, email: true, role: true, isActive: true },
+      });
+
+      return reply.code(201).send({ data: newUser });
+    }
+  );
+
+  // Update user (Super Admin only)
+  server.put(
+    '/api/v1/users/:id',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN'])] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const { name, email, role, isActive } = request.body as any;
+
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (!user) {
+        return reply.code(404).send({ error: 'Not Found', message: 'User not found' });
+      }
+
+      const updatedUser = await prisma.user.update({
+        where: { id },
+        data: {
+          name: name || undefined,
+          email: email || undefined,
+          role: role || undefined,
+          isActive: isActive !== undefined ? isActive : undefined,
+        },
+        select: { id: true, name: true, email: true, role: true, isActive: true },
+      });
+
+      return reply.send({ data: updatedUser });
+    }
+  );
+
+  // Delete user
+  server.delete(
+    '/api/v1/users/:id',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN'])] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      await prisma.user.delete({ where: { id } });
+      return reply.send({ message: 'User deleted successfully' });
+    }
+  );
+}
