@@ -29,14 +29,20 @@ export function WIP() {
 
   useEffect(() => {
     const stored = localStorage.getItem('pdits_locations');
+    const defaultLocations = ['Mesin-01', 'Mesin-02', 'Assembly Line', 'QC Station'];
     if (stored) {
       try {
-        setLocations(JSON.parse(stored));
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setLocations(parsed);
+        } else {
+          setLocations(defaultLocations);
+        }
       } catch (e) {
-        setLocations(['Line 1', 'Line 2', 'Assembly Line A', 'Assembly Line B', 'QC Area']);
+        setLocations(defaultLocations);
       }
     } else {
-      setLocations(['Line 1', 'Line 2', 'Assembly Line A', 'Assembly Line B', 'QC Area']);
+      setLocations(defaultLocations);
     }
   }, []);
 

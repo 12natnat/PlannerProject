@@ -206,36 +206,49 @@ export function Dashboard() {
             <table className="w-full text-sm text-left">
               <thead className="text-xs text-muted-foreground uppercase bg-secondary/50">
                 <tr>
-                  <th className="px-6 py-3 font-semibold">Part Number</th>
                   <th className="px-6 py-3 font-semibold">Toy Name</th>
+                  <th className="px-6 py-3 font-semibold">Master Carton</th>
+                  <th className="px-6 py-3 font-semibold">Part Number</th>
+                  <th className="px-6 py-3 font-semibold">Description</th>
                   <th className="px-6 py-3 font-semibold text-right">Daily Demand</th>
                   <th className="px-6 py-3 font-semibold text-right">FG Stock</th>
                   <th className="px-6 py-3 font-semibold text-right">WIP</th>
                   <th className="px-6 py-3 font-semibold text-right">Total Supply</th>
-                  <th className="px-6 py-3 font-semibold text-right text-destructive">Shortage (Gap)</th>
+                  <th className="px-6 py-3 font-semibold text-right text-rose-600 dark:text-rose-400">Immediate Shortage</th>
+                  <th className="px-6 py-3 font-semibold text-right text-destructive">Projected Shortage</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {filteredGapAnalysis.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-6 py-8 text-center text-muted-foreground">
+                    <td colSpan={10} className="px-6 py-8 text-center text-muted-foreground">
                       No shortage details found.
                     </td>
                   </tr>
                 ) : (
-                  filteredGapAnalysis.map((item, idx) => (
-                    <tr key={`${item.itemCode}-${idx}`} className="hover:bg-muted/50 transition-colors">
-                      <td className="px-6 py-4 font-semibold text-foreground">{item.itemCode}</td>
-                      <td className="px-6 py-4 max-w-[240px] truncate" title={item.itemName}>{item.itemName}</td>
-                      <td className="px-6 py-4 text-right font-medium">{item.demand.toLocaleString()}</td>
-                      <td className="px-6 py-4 text-right font-medium text-green-600 dark:text-green-500">{item.fgStock.toLocaleString()}</td>
-                      <td className="px-6 py-4 text-right font-medium text-amber-500">{item.wip.toLocaleString()}</td>
-                      <td className="px-6 py-4 text-right font-medium text-blue-600 dark:text-blue-500">{(item.fgStock + item.wip).toLocaleString()}</td>
-                      <td className="px-6 py-4 text-right font-bold text-destructive bg-destructive/5">
-                        {Math.abs(item.gap).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))
+                  filteredGapAnalysis.map((item, idx) => {
+                    const immediateShortage = item.demand > item.fgStock ? item.demand - item.fgStock : 0;
+                    const projectedShortage = Math.abs(item.gap);
+                    
+                    return (
+                      <tr key={`${item.itemCode}-${idx}`} className="hover:bg-muted/50 transition-colors">
+                        <td className="px-6 py-4 max-w-[180px] truncate" title={item.toyName}>{item.toyName}</td>
+                        <td className="px-6 py-4 font-medium">{item.masterCarton}</td>
+                        <td className="px-6 py-4 font-semibold text-foreground">{item.itemCode}</td>
+                        <td className="px-6 py-4 max-w-[240px] truncate" title={item.itemName}>{item.itemName}</td>
+                        <td className="px-6 py-4 text-right font-medium">{item.demand.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-right font-medium text-green-600 dark:text-green-500">{item.fgStock.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-right font-medium text-amber-500">{item.wip.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-right font-medium text-blue-600 dark:text-blue-500">{(item.fgStock + item.wip).toLocaleString()}</td>
+                        <td className="px-6 py-4 text-right font-bold text-rose-600 dark:text-rose-400 bg-rose-500/5">
+                          {immediateShortage.toLocaleString()}
+                        </td>
+                        <td className="px-6 py-4 text-right font-bold text-destructive bg-destructive/5">
+                          {projectedShortage.toLocaleString()}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

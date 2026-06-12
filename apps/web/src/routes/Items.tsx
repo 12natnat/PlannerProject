@@ -1,9 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useItems, useCreateItem, useDeleteItem, useUpdateItem, useMasterCartons, useCreateMasterCarton, useUpdateMasterCarton, useDeleteMasterCarton } from '../hooks/useItems';
+import { useWIPs } from '../hooks/useWIP';
 import { Plus, Trash2, Pencil, Search, PackageOpen, Sliders, Scale, MapPin, Box, Tag, Layers } from 'lucide-react';
 
 export function Items() {
   const { data, isLoading } = useItems();
+  const { data: wipData } = useWIPs();
+  
+  const wips = wipData?.data || [];
+  const activeLocations = useMemo(() => {
+    return Array.from(new Set(wips.map((w: any) => w.location))).filter(Boolean) as string[];
+  }, [wips]);
+
   const createItem = useCreateItem();
   const deleteItem = useDeleteItem();
   const updateItem = useUpdateItem();
@@ -41,6 +49,10 @@ export function Items() {
   const [editingLocation, setEditingLocation] = useState<string | null>(null);
   const [newLocation, setNewLocation] = useState('');
 
+  const allLocations = useMemo(() => {
+    return Array.from(new Set([...locations, ...activeLocations])).filter(Boolean);
+  }, [locations, activeLocations]);
+
   // Load Units and Locations from localStorage on mount
   useEffect(() => {
     const storedUnits = localStorage.getItem('pdits_units');
@@ -53,10 +65,21 @@ export function Items() {
     }
 
     const storedLocations = localStorage.getItem('pdits_locations');
+    const defaultLocations = ['Mesin-01', 'Mesin-02', 'Assembly Line', 'QC Station'];
     if (storedLocations) {
-      try { setLocations(JSON.parse(storedLocations)); } catch (e) { setLocations(['Line 1', 'Line 2', 'Assembly Line A', 'Assembly Line B', 'QC Area']); }
+      try {
+        const parsed = JSON.parse(storedLocations);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setLocations(parsed);
+        } else {
+          setLocations(defaultLocations);
+          localStorage.setItem('pdits_locations', JSON.stringify(defaultLocations));
+        }
+      } catch (e) {
+        setLocations(defaultLocations);
+        localStorage.setItem('pdits_locations', JSON.stringify(defaultLocations));
+      }
     } else {
-      const defaultLocations = ['Line 1', 'Line 2', 'Assembly Line A', 'Assembly Line B', 'QC Area'];
       setLocations(defaultLocations);
       localStorage.setItem('pdits_locations', JSON.stringify(defaultLocations));
     }
@@ -227,7 +250,7 @@ export function Items() {
     if (!formattedLoc) return;
 
     if (editingLocation) {
-      if (formattedLoc.toLowerCase() !== editingLocation.toLowerCase() && locations.some(l => l.toLowerCase() === formattedLoc.toLowerCase())) {
+      if (formattedLoc.toLowerCase() !== editingLocation.toLowerCase() && allLocations.some(l => l.toLowerCase() === formattedLoc.toLowerCase())) {
         alert('Location already exists!');
         return;
       }
@@ -235,7 +258,7 @@ export function Items() {
       saveLocations(updated);
       setEditingLocation(null);
     } else {
-      if (locations.some(l => l.toLowerCase() === formattedLoc.toLowerCase())) {
+      if (allLocations.some(l => l.toLowerCase() === formattedLoc.toLowerCase())) {
         alert('Location already exists!');
         return;
       }
@@ -921,10 +944,10 @@ export function Items() {
             <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
               <div className="p-4 border-b bg-secondary/30 flex justify-between items-center">
                 <h4 className="font-semibold text-sm">WIP Production Locations dropdown list</h4>
-                <span className="text-xs text-muted-foreground">{locations.length} options active</span>
+                <span className="text-xs text-muted-foreground">{allLocations.length} options active</span>
               </div>
               <div className="divide-y divide-border">
-                {locations.map((loc, index) => (
+                {allLocations.map((loc, index) => (
                   <div key={loc} className="px-6 py-4 flex items-center justify-between hover:bg-muted/30 transition-colors">
                     <div className="flex items-center gap-3">
                       <span className="text-xs text-muted-foreground w-6">{index + 1}</span>

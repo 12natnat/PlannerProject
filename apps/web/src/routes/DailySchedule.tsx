@@ -264,7 +264,13 @@ export function DailySchedule() {
   const { user } = useAuthStore();
   const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
   
-  const [filterDate, setFilterDate] = useState('');
+  const [filterDate, setFilterDate] = useState(() => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
   const [showForm, setShowForm] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [importData, setImportData] = useState<ImportRecord[]>([]);

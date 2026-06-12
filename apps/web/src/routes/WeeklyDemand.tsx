@@ -221,6 +221,61 @@ export function WeeklyDemand() {
     return map;
   }, [allData]);
 
+  // List of available weeks for the dropdown select in the form
+  const availableWeeks = useMemo(() => {
+    if (allWeeks.length > 0) {
+      return allWeeks.map(w => {
+        const startStr = weekStartByNumber[w];
+        let dateLabel = '';
+        if (startStr) {
+          const localDateStr = startStr.split('T')[0];
+          const d = new Date(localDateStr + 'T00:00:00');
+          if (!isNaN(d.getTime())) {
+            dateLabel = d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+          }
+        }
+        return {
+          weekNumber: w,
+          startDate: startStr ? startStr.split('T')[0] : '',
+          label: `Week ${w} ${dateLabel ? `(${dateLabel})` : ''}`,
+        };
+      });
+    }
+
+    // Fallback: Generate 26 weeks starting from the Saturday of this week
+    const list = [];
+    const baseDate = new Date();
+    baseDate.setHours(0, 0, 0, 0);
+    const day = baseDate.getDay();
+    const diff = (6 - day + 7) % 7;
+    baseDate.setDate(baseDate.getDate() + diff);
+
+    for (let i = 0; i < 26; i++) {
+      const d = new Date(baseDate.getTime() + i * 7 * 86400000);
+      const { week } = getISOWeek(d);
+      const startStr = d.toISOString().split('T')[0];
+      const dateLabel = d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+      list.push({
+        weekNumber: week,
+        startDate: startStr,
+        label: `Week ${i + 1} (${dateLabel})`,
+      });
+    }
+    return list;
+  }, [allWeeks, weekStartByNumber]);
+
+  React.useEffect(() => {
+    if (showForm && availableWeeks.length > 0) {
+      const firstWeek = availableWeeks[0];
+      const endStr = new Date(new Date(firstWeek.startDate).getTime() + 6 * 86400000).toISOString().split('T')[0];
+      setFormData(prev => ({
+        ...prev,
+        startDate: firstWeek.startDate,
+        endDate: endStr,
+      }));
+    }
+  }, [showForm, availableWeeks]);
+
   const visibleWeeks = useMemo(
     () => allWeeks.slice(weekPage * WEEKS_PER_PAGE, (weekPage + 1) * WEEKS_PER_PAGE),
     [allWeeks, weekPage],
@@ -426,25 +481,24 @@ export function WeeklyDemand() {
                 placeholder="Search Description..."
               />
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Start Date</label>
-              <input
-                type="date"
-                className="w-full h-10 px-3 border rounded-md bg-background text-sm"
+            <div className="space-y-2 md:col-span-2">
+              <label className="text-sm font-medium">Select Week & Date</label>
+              <select
+                className="w-full h-10 px-3 border rounded-md bg-background text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary"
                 value={formData.startDate}
-                onChange={e => setFormData({ ...formData, startDate: e.target.value })}
-              />
-              <p className="text-[11px] text-muted-foreground">Tanggal mulai minggu pertama (idealnya hari Sabtu).</p>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">End Date</label>
-              <input
-                type="date"
-                className="w-full h-10 px-3 border rounded-md bg-background text-sm"
-                value={formData.endDate}
-                onChange={e => setFormData({ ...formData, endDate: e.target.value })}
-              />
-              <p className="text-[11px] text-muted-foreground">Batas waktu akhir pengisian demand.</p>
+                onChange={e => {
+                  const startStr = e.target.value;
+                  const endStr = new Date(new Date(startStr).getTime() + 6 * 86400000).toISOString().split('T')[0];
+                  setFormData({ ...formData, startDate: startStr, endDate: endStr });
+                }}
+              >
+                {availableWeeks.map((w, idx) => (
+                  <option key={idx} value={w.startDate}>
+                    {w.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-muted-foreground">Pilih minggu target pengisian demand plan (minggu dihitung dari hari Sabtu sampai Jumat berikutnya).</p>
             </div>
             <div className="space-y-2 md:col-span-2">
               <label className="text-sm font-medium">Quantity / Week</label>

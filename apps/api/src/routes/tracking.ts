@@ -69,6 +69,14 @@ export default async function trackingRoutes(server: FastifyInstance) {
     targetDate.setUTCHours(0, 0, 0, 0);
 
     const items = await prisma.item.findMany();
+    const masterCartons = await prisma.masterCarton.findMany({
+      include: { toyNameItem: true }
+    });
+
+    const mcMap = new Map<string, typeof masterCartons[0]>();
+    for (const mc of masterCartons) {
+      mcMap.set(mc.partNumberCode, mc);
+    }
     
     // In a real scenario, this would be highly optimized using SQL aggregation.
     // For this implementation, we map over items to calculate individual statuses.
@@ -100,9 +108,15 @@ export default async function trackingRoutes(server: FastifyInstance) {
       else if (status === 'IN_PRODUCTION') inProductionCount++;
       else if (status === 'SHORTAGE') shortageCount++;
 
+      const mc = mcMap.get(item.itemCode);
+      const toyName = mc ? mc.toyNameItem.itemName : '-';
+      const masterCarton = mc ? mc.cartonCode : '-';
+
       gapAnalysis.push({
         itemCode: item.itemCode,
         itemName: item.itemName,
+        toyName,
+        masterCarton,
         demand,
         fgStock,
         wip: totalWip,
