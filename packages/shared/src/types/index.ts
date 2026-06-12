@@ -85,7 +85,6 @@ export interface WIP {
   progressPercent: number;
   date: Date;
   shift: number;
-  estimatedFinish: Date;
   status: WIPStatus;
   notes?: string;
   updatedBy: string;

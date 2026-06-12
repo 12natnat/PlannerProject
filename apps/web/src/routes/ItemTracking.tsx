@@ -394,14 +394,13 @@ export function ItemTracking() {
                     <th className="px-6 py-3.5 font-semibold text-right">Kuantitas</th>
                     <th className="px-6 py-3.5 font-semibold">Progres WIP</th>
                     <th className="px-6 py-3.5 font-semibold">Tanggal Mulai</th>
-                    <th className="px-6 py-3.5 font-semibold">Estimasi Selesai</th>
                     <th className="px-6 py-3.5 font-semibold">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {trackingData.wip_details.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-6 py-10 text-center text-muted-foreground text-sm">
+                      <td colSpan={6} className="px-6 py-10 text-center text-muted-foreground text-sm">
                         Tidak ada aktivitas WIP aktif untuk item ini di lini produksi.
                       </td>
                     </tr>
@@ -427,9 +426,6 @@ export function ItemTracking() {
                         </td>
                         <td className="px-6 py-4 text-xs font-medium text-muted-foreground">
                           {wip.date}
-                        </td>
-                        <td className="px-6 py-4 text-xs font-medium text-muted-foreground">
-                          {wip.estimated_finish}
                         </td>
                         <td className="px-6 py-4">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${

@@ -91,6 +91,36 @@ export default async function fgStockRoutes(server: FastifyInstance) {
         return reply.code(400).send({ error: 'Bad Request', message: 'No records provided' });
       }
 
+      if (saveMode === 'overwrite') {
+        const uniqueCodes = [...new Set(records.map((r: any) => r.itemCode as string).filter(Boolean))];
+        const existingItems = await prisma.item.findMany({ where: { itemCode: { in: uniqueCodes } } });
+        const itemCodeToId: Record<string, string> = {};
+        for (const item of existingItems) itemCodeToId[item.itemCode] = item.id;
+
+        const scopeMap = new Map<string, { date: Date; itemIds: Set<string> }>();
+        for (const r of records) {
+          if (!r.itemCode || r.quantity === undefined || !r.date) continue;
+          const date = new Date(r.date);
+          const key = date.getTime().toString();
+          
+          if (!scopeMap.has(key)) {
+            scopeMap.set(key, { date, itemIds: new Set() });
+          }
+          if (itemCodeToId[r.itemCode]) {
+            scopeMap.get(key)!.itemIds.add(itemCodeToId[r.itemCode]);
+          }
+        }
+
+        for (const scope of scopeMap.values()) {
+          await prisma.fGStock.deleteMany({
+            where: {
+              date: scope.date,
+              itemId: { notIn: Array.from(scope.itemIds) }
+            }
+          });
+        }
+      }
+
       const results = [];
       for (const record of records) {
         const { itemCode, quantity, date, unit } = record;
@@ -179,6 +209,34 @@ export default async function fgStockRoutes(server: FastifyInstance) {
       });
 
       return reply.send({ data: updatedStock });
+    }
+  );
+
+  // Bulk Delete FG stock
+  server.delete(
+    '/api/v1/fg-stock/bulk',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    async (request, reply) => {
+      const { ids } = request.body as { ids: string[] };
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return reply.code(400).send({ error: 'Bad Request', message: 'No ids provided' });
+      }
+
+      await prisma.fGStock.deleteMany({
+        where: { id: { in: ids } },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: request.user!.id,
+          action: 'DELETE',
+          entityType: 'FGStock',
+          entityId: 'bulk',
+          notes: `Bulk deleted ${ids.length} records`,
+        },
+      });
+
+      return reply.send({ success: true, count: ids.length });
     }
   );
 

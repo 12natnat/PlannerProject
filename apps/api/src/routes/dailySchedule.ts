@@ -14,10 +14,31 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
     const schedules = await prisma.dailySchedule.findMany({
       where: whereClause,
       include: { item: true },
-      orderBy: { date: 'desc' },
+      orderBy: [{ date: 'asc' }, { shift: 'asc' }],
     });
     
-    return reply.send({ data: schedules });
+    // Fetch related MasterCarton and Toy Name mapping
+    const itemCodes = [...new Set(schedules.map(s => s.item.itemCode))];
+    const masterCartons = await prisma.masterCarton.findMany({
+      where: { partNumberCode: { in: itemCodes } },
+      include: { toyNameItem: true },
+    });
+
+    const mcMap = new Map<string, any>();
+    for (const mc of masterCartons) {
+      mcMap.set(mc.partNumberCode, mc);
+    }
+
+    const enhancedSchedules = schedules.map(s => {
+      const mc = mcMap.get(s.item.itemCode);
+      return {
+        ...s,
+        masterCarton: mc ? mc.cartonCode : undefined,
+        toyName: mc && mc.toyNameItem ? mc.toyNameItem.itemName : s.item.itemName,
+      };
+    });
+    
+    return reply.send({ data: enhancedSchedules });
   });
 
   // Create or Update daily schedule (single record)
@@ -111,23 +132,82 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
         return reply.code(400).send({ error: 'Bad Request', message: 'No records provided' });
       }
 
+      if (saveMode === 'overwrite') {
+        const uniqueCodes = [...new Set(records.map((r: any) => r.itemCode as string).filter(Boolean))];
+        const existingItems = await prisma.item.findMany({ where: { itemCode: { in: uniqueCodes } } });
+        const itemCodeToId: Record<string, string> = {};
+        for (const item of existingItems) itemCodeToId[item.itemCode] = item.id;
+
+        const scopeMap = new Map<string, { date: Date; shift: number; itemIds: Set<string> }>();
+        for (const r of records) {
+          if (!r.date || !r.shift || !r.itemCode || r.quantity === undefined) continue;
+          const date = new Date(r.date);
+          const shift = parseInt(r.shift);
+          const key = `${date.getTime()}_${shift}`;
+          
+          if (!scopeMap.has(key)) {
+            scopeMap.set(key, { date, shift, itemIds: new Set() });
+          }
+          if (itemCodeToId[r.itemCode]) {
+            scopeMap.get(key)!.itemIds.add(itemCodeToId[r.itemCode]);
+          }
+        }
+
+        for (const scope of scopeMap.values()) {
+          await prisma.dailySchedule.deleteMany({
+            where: {
+              date: scope.date,
+              shift: scope.shift,
+              itemId: { notIn: Array.from(scope.itemIds) }
+            }
+          });
+        }
+      }
+
       const results = [];
       for (const record of records) {
-        const { date, shift, itemCode, toyName, quantity } = record;
+        const { date, shift, itemCode, toyName, masterCarton, quantity } = record;
         if (!date || !shift || !itemCode || quantity === undefined) continue;
 
-        // Find or create Item
+        // Find or create Part Number Item
         let item = await prisma.item.findUnique({ where: { itemCode } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: toyName || itemCode, unit: 'PCS' },
+            data: { itemCode, itemName: itemCode, unit: 'PCS' },
           });
-        } else if (toyName && item.itemName !== toyName) {
-          // Update toyName if provided and different
-          item = await prisma.item.update({
-            where: { id: item.id },
-            data: { itemName: toyName },
-          });
+        }
+
+        // Handle Toy Name and Master Carton relationship
+        if (toyName && masterCarton) {
+          // Find or create Toy Name item (using toyName as both code and name)
+          const toyNameCode = toyName.replace(/\s+/g, '_').toUpperCase();
+          let toyNameItem = await prisma.item.findUnique({ where: { itemCode: toyNameCode } });
+          if (!toyNameItem) {
+            toyNameItem = await prisma.item.create({
+              data: { itemCode: toyNameCode, itemName: toyName, unit: 'SET' },
+            });
+          }
+
+          // Create or update Master Carton record
+          let masterCartonRecord = await prisma.masterCarton.findUnique({ where: { cartonCode: masterCarton } });
+          if (!masterCartonRecord) {
+            masterCartonRecord = await prisma.masterCarton.create({
+              data: {
+                cartonCode: masterCarton,
+                toyNameItemId: toyNameItem.id,
+                partNumberCode: itemCode,
+              },
+            });
+          } else if (masterCartonRecord.partNumberCode !== itemCode || masterCartonRecord.toyNameItemId !== toyNameItem.id) {
+            // Update if relationship changed
+            masterCartonRecord = await prisma.masterCarton.update({
+              where: { cartonCode: masterCarton },
+              data: {
+                toyNameItemId: toyNameItem.id,
+                partNumberCode: itemCode,
+              },
+            });
+          }
         }
 
         const scheduleDate = new Date(date);
@@ -236,6 +316,34 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
       });
 
       return reply.send({ data: schedule });
+    }
+  );
+
+  // Delete multiple daily schedules
+  server.delete(
+    '/api/v1/daily-schedule/bulk',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    async (request, reply) => {
+      const { ids } = request.body as { ids: string[] };
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return reply.code(400).send({ error: 'Bad Request', message: 'No ids provided' });
+      }
+
+      await prisma.dailySchedule.deleteMany({
+        where: { id: { in: ids } },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: request.user!.id,
+          action: 'DELETE',
+          entityType: 'DailySchedule',
+          entityId: 'bulk',
+          notes: `Bulk deleted ${ids.length} records`,
+        },
+      });
+
+      return reply.send({ success: true, count: ids.length });
     }
   );
 

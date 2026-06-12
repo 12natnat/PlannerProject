@@ -1,9 +1,29 @@
 import React, { useState, useMemo } from 'react';
-import { useWeeklyScheduleSummary, useBulkUpsertWeeklySchedule, useUpsertWeeklySchedule, useUpdateWeeklySchedule, useDeleteWeeklySchedule } from '../hooks/useWeeklySchedule';
+import { useWeeklyScheduleSummary, useBulkUpsertWeeklySchedule, useUpdateWeeklySchedule, useDeleteWeeklySchedule, useBulkDeleteWeeklySchedule } from '../hooks/useWeeklySchedule';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
 import { Upload, Search, Save, Plus, CalendarRange, Trash2, ChevronLeft, ChevronRight, Calendar, Edit2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { useAuthStore } from '../stores/authStore';
+
+// Compute ISO week number / ISO year for a given date.
+// Used to build a unique (year, weekNumber) pair when manually adding demand.
+function getISOWeek(date: Date): { year: number; week: number } {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return { year: d.getUTCFullYear(), week };
+}
+
+// Default start date for the manual Add Demand form: the upcoming Saturday from today.
+function getNextSaturdayISO(): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  const offset = (6 - d.getDay() + 7) % 7 || 7; // strictly future Saturday
+  d.setDate(d.getDate() + offset);
+  return d.toISOString().split('T')[0];
+}
 
 // ─── Excel Parser ────────────────────────────────────────────────────────────
 interface ImportWeekData {
@@ -15,7 +35,7 @@ interface ImportWeekData {
 interface ImportRow {
   id: string;
   itemCode: string;
-  toyName: string;
+  description: string;
   weeks: ImportWeekData[];
   total: number;
 }
@@ -30,7 +50,7 @@ function excelSerialToDate(serial: number): string {
  * Parse the 26-week demand Excel (26Weeks.xlsx format):
  *   Row 0: blank, blank, blank, 1, 2, 3 … 26  (week numbers at cols 3+)
  *   Row 1: "PN", "Description", "Total", date1, date2 … (Excel serial dates at cols 3+)
- *   Row 2+: itemCode, toyName, total, qty1, qty2 …
+ *   Row 2+: itemCode, description, total, qty1, qty2 …
  */
 function parse26WeekExcel(ws: XLSX.WorkSheet): { rows: ImportRow[]; year: number } {
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
@@ -68,7 +88,7 @@ function parse26WeekExcel(ws: XLSX.WorkSheet): { rows: ImportRow[]; year: number
     const cellPN = ws[XLSX.utils.encode_cell({ r, c: 0 })];
     const cellDesc = ws[XLSX.utils.encode_cell({ r, c: 1 })];
     const itemCode = cellPN ? String(cellPN.v).trim() : '';
-    const toyName = cellDesc ? String(cellDesc.v).trim() : '';
+    const description = cellDesc ? String(cellDesc.v).trim() : '';
     if (!itemCode || itemCode.toUpperCase() === 'PN' || itemCode.toLowerCase().includes('total')) continue;
 
     const weeks: ImportWeekData[] = [];
@@ -83,7 +103,7 @@ function parse26WeekExcel(ws: XLSX.WorkSheet): { rows: ImportRow[]; year: number
     }
     if (weeks.length === 0) continue;
     idCounter++;
-    rows.push({ id: `r-${idCounter}`, itemCode, toyName, weeks, total: Math.round(rowTotal) });
+    rows.push({ id: `r-${idCounter}`, itemCode, description, weeks, total: Math.round(rowTotal) });
   }
   return { rows, year };
 }
@@ -92,8 +112,10 @@ function parse26WeekExcel(ws: XLSX.WorkSheet): { rows: ImportRow[]; year: number
 const WEEKS_PER_PAGE = 13; // Show 13 weeks at a time (half of 26)
 
 export function WeeklyDemand() {
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
+  
   const currentYear = new Date().getFullYear();
-  const [selectedYear, setSelectedYear] = useState(currentYear);
   const [search, setSearch] = useState('');
   const [weekPage, setWeekPage] = useState(0);
   const [rowPage, setRowPage] = useState(0);
@@ -103,21 +125,24 @@ export function WeeklyDemand() {
   const [importYear, setImportYear] = useState(currentYear);
   const [importSearch, setImportSearch] = useState('');
 
-  // Manual add form state
+  // Manual add form state — uses an actual start date so the entry lines up
+  // with the dynamic W1-W26 view (relative to today).
   const [formData, setFormData] = useState({
     itemId: '',
-    weekFrom: 1,
-    weekTo: 1,
+    startDate: getNextSaturdayISO(),
+    endDate: getNextSaturdayISO(),
     quantity: 0,
   });
 
-  const { data: summaryData, isLoading } = useWeeklyScheduleSummary(selectedYear);
+  const { data: summaryData, isLoading } = useWeeklyScheduleSummary();
   const { data: itemsData } = useItems();
   const createItem = useCreateItem();
   const bulkUpsert = useBulkUpsertWeeklySchedule();
-  const upsertWeekly = useUpsertWeeklySchedule();
   const updateWeekly = useUpdateWeeklySchedule();
   const deleteWeekly = useDeleteWeeklySchedule();
+  const bulkDelete = useBulkDeleteWeeklySchedule();
+
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
 
   const [editModal, setEditModal] = useState<{ isOpen: boolean; data: any }>({
     isOpen: false,
@@ -147,6 +172,29 @@ export function WeeklyDemand() {
     }
   };
 
+  const handleDeleteSelected = async () => {
+    if (selectedItemIds.length === 0) return;
+    if (!confirm(`Are you sure you want to delete the demand for ${selectedItemIds.length} selected items?`)) return;
+    
+    const idsToDelete = selectedItemIds.flatMap(itemId => {
+      const row = allData.find((r: any) => r.itemId === itemId);
+      if (!row) return [];
+      return Object.values(row.weeks).map((w: any) => w.id);
+    });
+
+    if (idsToDelete.length === 0) {
+      setSelectedItemIds([]);
+      return;
+    }
+
+    try {
+      await bulkDelete.mutateAsync({ ids: idsToDelete });
+      setSelectedItemIds([]);
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete records');
+    }
+  };
+
   const items = itemsData?.data || [];
 
   const allData = summaryData?.data || [];
@@ -158,6 +206,19 @@ export function WeeklyDemand() {
     const wSet = new Set<number>();
     allData.forEach((row) => Object.keys(row.weeks).forEach((w) => wSet.add(Number(w))));
     return Array.from(wSet).sort((a, b) => a - b);
+  }, [allData]);
+
+  // Map relative week number -> weekStartDate (taken from the first row that has it).
+  // Used to render the small date label under each W column header.
+  const weekStartByNumber = useMemo(() => {
+    const map: Record<number, string> = {};
+    for (const row of allData) {
+      for (const [w, info] of Object.entries(row.weeks)) {
+        const wn = Number(w);
+        if (!map[wn] && info?.weekStartDate) map[wn] = info.weekStartDate as string;
+      }
+    }
+    return map;
   }, [allData]);
 
   const visibleWeeks = useMemo(
@@ -176,6 +237,18 @@ export function WeeklyDemand() {
 
   const totalRowPages = Math.ceil(filteredData.length / ROWS_PER_PAGE);
   const paginatedData = filteredData.slice(rowPage * ROWS_PER_PAGE, (rowPage + 1) * ROWS_PER_PAGE);
+
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      const newIds = new Set([...selectedItemIds, ...paginatedData.map((r: any) => r.itemId)]);
+      setSelectedItemIds(Array.from(newIds));
+    } else {
+      const filteredSet = new Set(paginatedData.map((r: any) => r.itemId));
+      setSelectedItemIds(selectedItemIds.filter(id => !filteredSet.has(id)));
+    }
+  };
+
+  const allFilteredSelected = paginatedData.length > 0 && paginatedData.every((r: any) => selectedItemIds.includes(r.itemId));
 
   // ── Import handlers ──
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -217,7 +290,7 @@ export function WeeklyDemand() {
             ? new Date(new Date(w.weekStartDate).getTime() + 6 * 86400000).toISOString().split('T')[0]
             : undefined,
           itemCode: row.itemCode,
-          toyName: row.toyName,
+          description: row.description,
           quantity: w.quantity,
         });
       }
@@ -235,7 +308,7 @@ export function WeeklyDemand() {
   const filteredImport = importRows.filter((r) => {
     if (!importSearch) return true;
     const q = importSearch.toLowerCase();
-    return r.itemCode.toLowerCase().includes(q) || r.toyName.toLowerCase().includes(q);
+    return r.itemCode.toLowerCase().includes(q) || r.description.toLowerCase().includes(q);
   });
 
   const importSummary = useMemo(() => {
@@ -246,23 +319,43 @@ export function WeeklyDemand() {
   }, [importRows]);
 
   const handleManualSave = async (saveMode: 'overwrite' | 'add') => {
-    if (!formData.itemId || !formData.quantity) return;
+    if (!formData.itemId || !formData.quantity || !formData.startDate || !formData.endDate) return;
     const item = items.find((i: any) => i.id === formData.itemId);
     if (!item) return;
+
+    const baseStart = new Date(formData.startDate + 'T00:00:00');
+    const baseEnd = new Date(formData.endDate + 'T00:00:00');
+    if (baseEnd < baseStart) {
+      alert("End Date tidak boleh lebih kecil dari Start Date");
+      return;
+    }
+
+    const diffTime = Math.abs(baseEnd.getTime() - baseStart.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const weeksCount = Math.floor(diffDays / 7) + 1;
+
+    const formatLocal = (d: Date) => 
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
     const records: any[] = [];
-    for (let w = formData.weekFrom; w <= formData.weekTo; w++) {
+    for (let i = 0; i < weeksCount; i++) {
+      const start = new Date(baseEnd.getTime() - (weeksCount - 1 - i) * 7 * 86400000);
+      const end = new Date(start.getTime() + 6 * 86400000);
+      const { year: isoYear, week: isoWeek } = getISOWeek(start);
       records.push({
-        year: selectedYear,
-        weekNumber: w,
+        year: isoYear,
+        weekNumber: isoWeek,
+        weekStartDate: formatLocal(start),
+        weekEndDate: formatLocal(end),
         itemCode: (item as any).itemCode,
-        toyName: (item as any).itemName,
+        description: (item as any).itemName,
         quantity: formData.quantity,
       });
     }
     try {
       await bulkUpsert.mutateAsync({ records, saveMode });
       setShowForm(false);
-      setFormData({ itemId: '', weekFrom: 1, weekTo: 1, quantity: 0 });
+      setFormData({ itemId: '', startDate: getNextSaturdayISO(), endDate: getNextSaturdayISO(), quantity: 0 });
     } catch (err: any) {
       alert(err.message || 'Gagal menyimpan data.');
     }
@@ -279,17 +372,20 @@ export function WeeklyDemand() {
           <p className="text-muted-foreground text-sm">Rencana kebutuhan produksi selama 26 minggu ke depan.</p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <button onClick={() => setSelectedYear((y) => y - 1)} className="h-9 w-9 flex items-center justify-center border rounded-md hover:bg-muted transition-colors"><ChevronLeft size={16} /></button>
-            <span className="font-semibold text-sm w-12 text-center">{selectedYear}</span>
-            <button onClick={() => setSelectedYear((y) => y + 1)} className="h-9 w-9 flex items-center justify-center border rounded-md hover:bg-muted transition-colors"><ChevronRight size={16} /></button>
+          <div className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground border rounded-md px-3 h-9">
+            <Calendar size={14} />
+            <span>26 minggu ke depan dari hari ini</span>
           </div>
-          <button onClick={() => setShowImport(true)} className="bg-secondary border hover:bg-secondary/80 px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 transition-colors">
-            <Upload size={16} /> Import Excel
-          </button>
-          <button onClick={() => setShowForm(!showForm)} className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 transition-colors">
-            <Plus size={16} /> Add Demand
-          </button>
+          {isAdmin && (
+            <button onClick={() => setShowImport(true)} className="bg-secondary border hover:bg-secondary/80 px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 transition-colors">
+              <Upload size={16} /> Import Excel
+            </button>
+          )}
+          {isAdmin && (
+            <button onClick={() => setShowForm(!showForm)} className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 transition-colors">
+              <Plus size={16} /> Add Demand
+            </button>
+          )}
         </div>
       </div>
 
@@ -315,9 +411,9 @@ export function WeeklyDemand() {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Toy Name</label>
+              <label className="text-sm font-medium">Description</label>
               <SearchableSelect
-                options={items.map((i: any) => ({ value: i.id, label: i.itemName }))}
+                options={items.filter((i: any) => i.itemCode !== i.itemName).map((i: any) => ({ value: i.id, label: i.itemName }))}
                 value={formData.itemId}
                 onChange={(val) => setFormData({ ...formData, itemId: val })}
                 onAdd={async (search) => {
@@ -327,20 +423,28 @@ export function WeeklyDemand() {
                     if (res?.data?.id) setFormData(f => ({ ...f, itemId: res.data.id }));
                   } catch (e: any) { alert(e.message); }
                 }}
-                placeholder="Search Toy Name..."
+                placeholder="Search Description..."
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">From Week</label>
-              <select className="w-full h-10 px-3 border rounded-md bg-background text-sm" value={formData.weekFrom} onChange={e => setFormData({ ...formData, weekFrom: Number(e.target.value) })}>
-                {Array.from({ length: 26 }, (_, i) => i + 1).map(w => <option key={w} value={w}>Week {w}</option>)}
-              </select>
+              <label className="text-sm font-medium">Start Date</label>
+              <input
+                type="date"
+                className="w-full h-10 px-3 border rounded-md bg-background text-sm"
+                value={formData.startDate}
+                onChange={e => setFormData({ ...formData, startDate: e.target.value })}
+              />
+              <p className="text-[11px] text-muted-foreground">Tanggal mulai minggu pertama (idealnya hari Sabtu).</p>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Until Week</label>
-              <select className="w-full h-10 px-3 border rounded-md bg-background text-sm" value={formData.weekTo} onChange={e => setFormData({ ...formData, weekTo: Number(e.target.value) })}>
-                {Array.from({ length: 26 }, (_, i) => i + 1).map(w => <option key={w} value={w}>Week {w}</option>)}
-              </select>
+              <label className="text-sm font-medium">End Date</label>
+              <input
+                type="date"
+                className="w-full h-10 px-3 border rounded-md bg-background text-sm"
+                value={formData.endDate}
+                onChange={e => setFormData({ ...formData, endDate: e.target.value })}
+              />
+              <p className="text-[11px] text-muted-foreground">Batas waktu akhir pengisian demand.</p>
             </div>
             <div className="space-y-2 md:col-span-2">
               <label className="text-sm font-medium">Quantity / Week</label>
@@ -363,11 +467,21 @@ export function WeeklyDemand() {
       <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
         {/* Filter bar */}
         <div className="p-4 border-b bg-muted/10 flex items-center gap-3">
+          {isAdmin && selectedItemIds.length > 0 && (
+            <button 
+              onClick={handleDeleteSelected}
+              disabled={bulkDelete.isPending}
+              className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-md font-medium text-sm flex items-center space-x-2 transition-colors shrink-0"
+            >
+              <Trash2 size={16} />
+              <span>Delete Selected ({selectedItemIds.length})</span>
+            </button>
+          )}
           <div className="relative max-w-sm flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
             <input
               type="text"
-              placeholder="Cari Part Number atau Toy Name..."
+              placeholder="Cari Part Number atau Description..."
               className="w-full h-9 pl-9 pr-3 border rounded-md bg-background text-sm"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setRowPage(0); }}
@@ -399,12 +513,17 @@ export function WeeklyDemand() {
           <table className="w-full text-sm text-left">
             <thead className="bg-secondary/50 text-muted-foreground uppercase text-xs font-medium">
               <tr>
-                <th className="px-4 py-3 sticky left-0 bg-secondary/80 z-10 min-w-[130px]">Part Number</th>
-                <th className="px-4 py-3 sticky left-[130px] bg-secondary/80 z-10 min-w-[180px]">Toy Name</th>
+                {isAdmin && (
+                  <th className="px-4 py-3 sticky left-0 bg-secondary/80 z-20 w-12 text-center">
+                    <input type="checkbox" checked={allFilteredSelected} onChange={handleSelectAll} className="rounded border-gray-300" />
+                  </th>
+                )}
+                <th className={`px-4 py-3 sticky bg-secondary/80 z-10 min-w-[130px] ${isAdmin ? 'left-[48px]' : 'left-0'}`}>Part Number</th>
+                <th className={`px-4 py-3 sticky bg-secondary/80 z-10 min-w-[180px] ${isAdmin ? 'left-[178px]' : 'left-[130px]'}`}>Description</th>
                 {visibleWeeks.map((w) => {
-                  const weekData = allData[0]?.weeks?.[w];
-                  const startLabel = weekData?.weekStartDate
-                    ? new Date(weekData.weekStartDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })
+                  const start = weekStartByNumber[w];
+                  const startLabel = start
+                    ? new Date(start).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })
                     : '';
                   return (
                     <th key={w} className="px-3 py-1 text-center min-w-[80px]">
@@ -419,21 +538,38 @@ export function WeeklyDemand() {
             <tbody className="divide-y divide-border">
               {isLoading ? (
                 <tr>
-                  <td colSpan={visibleWeeks.length + 3} className="p-8 text-center">
+                  <td colSpan={visibleWeeks.length + (isAdmin ? 4 : 3)} className="p-8 text-center">
                     Loading...
                   </td>
                 </tr>
               ) : filteredData.length === 0 ? (
                 <tr>
-                  <td colSpan={visibleWeeks.length + 3} className="p-8 text-center text-muted-foreground">
-                    Belum ada data. Klik <strong>Import Excel</strong> untuk upload data 26-week demand.
+                  <td colSpan={visibleWeeks.length + (isAdmin ? 4 : 3)} className="p-8 text-center text-muted-foreground">
+                    {isAdmin ? (
+                      <>Belum ada data. Klik <strong>Import Excel</strong> untuk upload data 26-week demand.</>
+                    ) : (
+                      'Belum ada data.'
+                    )}
                   </td>
                 </tr>
               ) : (
                 paginatedData.map((row) => (
                   <tr key={row.itemId} className="hover:bg-muted/50 transition-colors">
-                    <td className="px-4 py-3 font-medium sticky left-0 bg-card z-[5]">{row.itemCode}</td>
-                    <td className="px-4 py-3 text-muted-foreground sticky left-[130px] bg-card z-[5] max-w-[180px] truncate" title={row.itemName}>
+                    {isAdmin && (
+                      <td className="px-4 py-3 text-center sticky left-0 bg-card z-[5]">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedItemIds.includes(row.itemId)} 
+                          onChange={(e) => {
+                            if (e.target.checked) setSelectedItemIds([...selectedItemIds, row.itemId]);
+                            else setSelectedItemIds(selectedItemIds.filter(id => id !== row.itemId));
+                          }} 
+                          className="rounded border-gray-300"
+                        />
+                      </td>
+                    )}
+                    <td className={`px-4 py-3 font-medium sticky bg-card z-[5] ${isAdmin ? 'left-[48px]' : 'left-0'}`}>{row.itemCode}</td>
+                    <td className={`px-4 py-3 text-muted-foreground sticky bg-card z-[5] max-w-[180px] truncate ${isAdmin ? 'left-[178px]' : 'left-[130px]'}`} title={row.itemName}>
                       {row.itemName}
                     </td>
                     {visibleWeeks.map((w) => {
@@ -446,31 +582,33 @@ export function WeeklyDemand() {
                               <span className="font-medium text-blue-600 dark:text-blue-400">
                                 {qty.toLocaleString()}
                               </span>
-                              <div className="absolute inset-0 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 bg-card/90 backdrop-blur-[1px] transition-all">
-                                <button
-                                  onClick={() => setEditModal({
-                                    isOpen: true,
-                                    data: {
-                                      id: weekData.id,
-                                      itemCode: row.itemCode,
-                                      itemName: row.itemName,
-                                      weekNumber: w,
-                                      quantity: qty,
-                                    }
-                                  })}
-                                  className="p-1.5 text-blue-500 hover:bg-blue-100 dark:hover:bg-blue-900/50 rounded-md transition-colors"
-                                  title="Edit"
-                                >
-                                  <Edit2 size={14} />
-                                </button>
-                                <button
-                                  onClick={() => handleDelete(weekData.id)}
-                                  className="p-1.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/50 rounded-md transition-colors"
-                                  title="Delete"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </div>
+                              {isAdmin && (
+                                <div className="absolute inset-0 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 bg-card/90 backdrop-blur-[1px] transition-all">
+                                  <button
+                                    onClick={() => setEditModal({
+                                      isOpen: true,
+                                      data: {
+                                        id: weekData.id,
+                                        itemCode: row.itemCode,
+                                        itemName: row.itemName,
+                                        weekNumber: w,
+                                        quantity: qty,
+                                      }
+                                    })}
+                                    className="p-1.5 text-blue-500 hover:bg-blue-100 dark:hover:bg-blue-900/50 rounded-md transition-colors"
+                                    title="Edit"
+                                  >
+                                    <Edit2 size={14} />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDelete(weekData.id)}
+                                    className="p-1.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/50 rounded-md transition-colors"
+                                    title="Delete"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           ) : (
                             <span className="text-muted-foreground/30">—</span>
@@ -535,7 +673,7 @@ export function WeeklyDemand() {
               {/* Upload */}
               <div className="space-y-2">
                 <p className="text-sm text-muted-foreground">
-                  Upload file Excel dengan format: kolom <strong>PN</strong> (Part Number), <strong>Description</strong> (Toy Name),
+                  Upload file Excel dengan format: kolom <strong>PN</strong> (Part Number), <strong>Description</strong> (Description),
                   lalu kolom Week <strong>1–26</strong> dengan tanggal di bawahnya.
                 </p>
                 <input
@@ -581,7 +719,7 @@ export function WeeklyDemand() {
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={15} />
                       <input
                         type="text"
-                        placeholder="Cari Part Number / Toy Name..."
+                        placeholder="Cari Part Number / Description..."
                         className="w-full h-9 pl-9 pr-3 border rounded-md bg-background text-sm"
                         value={importSearch}
                         onChange={(e) => setImportSearch(e.target.value)}
@@ -598,7 +736,7 @@ export function WeeklyDemand() {
                       <thead className="bg-muted text-muted-foreground text-xs uppercase font-medium sticky top-0">
                         <tr>
                           <th className="px-4 py-2">Part Number</th>
-                          <th className="px-4 py-2">Toy Name</th>
+                          <th className="px-4 py-2">Description</th>
                           <th className="px-4 py-2 text-center">Minggu Data</th>
                           <th className="px-4 py-2 text-right">Total Qty</th>
                           <th className="px-4 py-2 text-center w-12">Del</th>
@@ -608,8 +746,8 @@ export function WeeklyDemand() {
                         {filteredImport.map((row) => (
                           <tr key={row.id} className="hover:bg-muted/40">
                             <td className="px-4 py-2 font-medium">{row.itemCode}</td>
-                            <td className="px-4 py-2 text-muted-foreground max-w-[200px] truncate" title={row.toyName}>
-                              {row.toyName}
+                            <td className="px-4 py-2 text-muted-foreground max-w-[200px] truncate" title={row.description}>
+                              {row.description}
                             </td>
                             <td className="px-4 py-2">
                               <div className="text-xs text-muted-foreground">
@@ -710,7 +848,7 @@ export function WeeklyDemand() {
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-muted-foreground">Week</label>
-                <div className="font-semibold">Week {editModal.data.weekNumber} ({selectedYear})</div>
+                <div className="font-semibold">W{editModal.data.weekNumber}</div>
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Quantity</label>

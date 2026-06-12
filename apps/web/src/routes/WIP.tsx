@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { useWIPs, useUpsertWIP, useBulkUpsertWIP, useUpdateWIP, useDeleteWIP } from '../hooks/useWIP';
+import { useWIPs, useUpsertWIP, useBulkUpsertWIP, useBulkDeleteWIP } from '../hooks/useWIP';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
-import { Settings2, Plus, Save, Upload, Trash2, Search, Filter, Calendar, X, Edit2 } from 'lucide-react';
-import { format } from 'date-fns';
+import { Settings2, Plus, Save, Upload, Trash2, Search, Filter, Calendar, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { useAuthStore } from '../stores/authStore';
 
 export function WIP() {
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
+  
   const [showForm, setShowForm] = useState(false);
   
   const { data: wipData, isLoading: loadingWIP } = useWIPs();
@@ -14,6 +17,9 @@ export function WIP() {
   const createItem = useCreateItem();
   const upsertWIP = useUpsertWIP();
   const bulkUpsertWIP = useBulkUpsertWIP();
+  const bulkDeleteWIP = useBulkDeleteWIP();
+
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const [showImportModal, setShowImportModal] = useState(false);
   const [importData, setImportData] = useState<any[]>([]);
@@ -41,7 +47,6 @@ export function WIP() {
     progressPercent: 0,
     date: new Date().toISOString().split('T')[0],
     shift: 1,
-    estimatedFinish: new Date(new Date().getTime() + 86400000).toISOString().split('T')[0],
     status: 'IN_PROGRESS',
     notes: '',
   });
@@ -68,25 +73,51 @@ export function WIP() {
     const matchesLocation = 
       !selectedLocation || wip.location === selectedLocation;
 
-    // Date matches production date or estimated finish date
+    // Date matches production date
     const wipDateStr = wip.date ? wip.date.split('T')[0] : '';
-    const wipEstFinishStr = wip.estimatedFinish ? wip.estimatedFinish.split('T')[0] : '';
     const targetDateStr = selectedDate;
 
     const matchesDate = 
       !selectedDate || 
-      wipDateStr === targetDateStr || 
-      wipEstFinishStr === targetDateStr;
+      wipDateStr === targetDateStr;
 
     return matchesSearch && matchesLocation && matchesDate;
   });
+
+  const groupedWips = React.useMemo(() => {
+    const groups: Record<string, any> = {};
+    for (const wip of filteredWips) {
+      const key = wip.item.itemCode;
+      if (!groups[key]) {
+        groups[key] = {
+          id: key,
+          itemCode: wip.item.itemCode,
+          itemName: wip.item.itemName,
+          locations: {},
+          total: 0,
+          ids: [],
+          recordedDate: wip.date ? wip.date.split('T')[0] : '',
+        };
+      }
+      groups[key].locations[wip.location] = { id: wip.id, quantity: wip.quantity };
+      groups[key].total += wip.quantity;
+      groups[key].ids.push(wip.id);
+
+      const wipDateStr = wip.date ? wip.date.split('T')[0] : '';
+      if (wipDateStr && wipDateStr > groups[key].recordedDate) {
+        groups[key].recordedDate = wipDateStr;
+      }
+    }
+    return Object.values(groups).sort((a: any, b: any) => a.itemCode.localeCompare(b.itemCode));
+  }, [filteredWips]);
 
   const itemOptions = items.map((item: any) => ({
     value: item.id,
     label: `${item.itemCode} - ${item.itemName}`
   }));
 
-  const locationOptions = locations.map(loc => ({
+  const allLocations = Array.from(new Set([...locations, ...activeLocations])).filter(Boolean);
+  const locationOptions = allLocations.map(loc => ({
     value: loc,
     label: loc
   }));
@@ -154,42 +185,29 @@ export function WIP() {
     }
   };
 
-  const updateWIP = useUpdateWIP();
-  const deleteWIP = useDeleteWIP();
 
-  const [editModal, setEditModal] = useState<{ isOpen: boolean; data: any }>({
-    isOpen: false,
-    data: null,
-  });
 
-  const handleEditSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editModal.data) return;
+  const handleDeleteSelected = async () => {
+    if (selectedIds.length === 0) return;
+    if (!confirm(`Are you sure you want to delete ${selectedIds.length} selected records?`)) return;
     try {
-      await updateWIP.mutateAsync({
-        id: editModal.data.id,
-        quantity: Number(editModal.data.quantity),
-        progressPercent: Number(editModal.data.progressPercent),
-        date: editModal.data.date,
-        shift: Number(editModal.data.shift),
-        estimatedFinish: editModal.data.estimatedFinish,
-        status: editModal.data.status,
-        notes: editModal.data.notes,
-      });
-      setEditModal({ isOpen: false, data: null });
+      await bulkDeleteWIP.mutateAsync({ ids: selectedIds });
+      setSelectedIds([]);
     } catch (err: any) {
-      alert(err.message || 'Failed to update WIP');
+      alert(err.message || 'Failed to delete records');
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this record?')) return;
-    try {
-      await deleteWIP.mutateAsync(id);
-    } catch (err: any) {
-      alert(err.message || 'Failed to delete WIP');
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      const newIds = new Set([...selectedIds, ...filteredWips.map((s: any) => s.id)]);
+      setSelectedIds(Array.from(newIds));
+    } else {
+      const filteredSet = new Set(filteredWips.map((s: any) => s.id));
+      setSelectedIds(selectedIds.filter(id => !filteredSet.has(id)));
     }
   };
+  const allFilteredSelected = filteredWips.length > 0 && filteredWips.every((s: any) => selectedIds.includes(s.id));
 
   const handleSubmit = async (e: React.FormEvent | React.MouseEvent, saveMode: 'overwrite' | 'add') => {
     e.preventDefault();
@@ -218,20 +236,24 @@ export function WIP() {
           <p className="text-muted-foreground text-sm">Manage items currently in production stages.</p>
         </div>
         <div className="flex gap-2">
-          <button 
-            onClick={() => setShowImportModal(true)}
-            className="bg-secondary text-secondary-foreground border hover:bg-secondary/80 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
-          >
-            <Upload size={16} />
-            <span>Import Data</span>
-          </button>
-          <button 
-            onClick={() => setShowForm(!showForm)}
-            className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
-          >
-            <Plus size={16} />
-            <span>Update WIP Status</span>
-          </button>
+          {isAdmin && (
+            <button 
+              onClick={() => setShowImportModal(true)}
+              className="bg-secondary text-secondary-foreground border hover:bg-secondary/80 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
+            >
+              <Upload size={16} />
+              <span>Import Data</span>
+            </button>
+          )}
+          {isAdmin && (
+            <button 
+              onClick={() => setShowForm(!showForm)}
+              className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
+            >
+              <Plus size={16} />
+              <span>Update WIP Status</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -288,29 +310,11 @@ export function WIP() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Current Date</label>
+              <label className="text-sm font-medium">Recorded Date</label>
               <input 
                 type="date" required
                 className="w-full h-10 px-3 border rounded-md bg-background"
                 value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Est. Finish Date</label>
-              <input 
-                type="date" required
-                className="w-full h-10 px-3 border rounded-md bg-background"
-                value={formData.estimatedFinish} onChange={e => setFormData({...formData, estimatedFinish: e.target.value})}
-              />
-            </div>
-
-            <div className="space-y-2 lg:col-span-4">
-              <label className="text-sm font-medium">Notes (Optional)</label>
-              <input 
-                type="text"
-                placeholder="E.g. Waiting for part X, delayed due to machine error."
-                className="w-full h-10 px-3 border rounded-md bg-background"
-                value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})}
               />
             </div>
 
@@ -329,6 +333,16 @@ export function WIP() {
 
       {/* Filters Bar */}
       <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm flex flex-col md:flex-row gap-4 items-center">
+        {isAdmin && selectedIds.length > 0 && (
+          <button 
+            onClick={handleDeleteSelected}
+            disabled={bulkDeleteWIP.isPending}
+            className="w-full md:w-auto h-10 px-4 flex items-center justify-center gap-2 border bg-red-600 text-white hover:bg-red-700 text-sm font-medium rounded-md transition-colors"
+          >
+            <Trash2 size={16} />
+            <span className="whitespace-nowrap">Delete Selected ({selectedIds.length})</span>
+          </button>
+        )}
         {/* Search Input */}
         <div className="relative w-full md:flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={18} />
@@ -413,68 +427,77 @@ export function WIP() {
           <table className="w-full text-sm text-left">
             <thead className="bg-secondary/50 text-muted-foreground uppercase text-xs font-medium">
               <tr>
-                <th className="px-6 py-3">Part Number</th>
-                <th className="px-6 py-3">Location</th>
-                <th className="px-6 py-3 text-right">Qty</th>
-                <th className="px-6 py-3">Est. Finish</th>
-                <th className="px-6 py-3">Updated By</th>
-                <th className="px-6 py-3 text-center">Actions</th>
+                {isAdmin && (
+                  <th className="px-6 py-3 w-12 text-center">
+                    <input type="checkbox" checked={allFilteredSelected} onChange={handleSelectAll} className="rounded border-gray-300" />
+                  </th>
+                )}
+                <th className="px-6 py-3 whitespace-nowrap">Part Number</th>
+                <th className="px-6 py-3 whitespace-nowrap">Recorded Date</th>
+                {activeLocations.map(loc => (
+                  <th key={loc} className="px-6 py-3 text-right whitespace-nowrap">{loc}</th>
+                ))}
+                <th className="px-6 py-3 text-right whitespace-nowrap">Total WIP</th>
+                {isAdmin && <th className="px-6 py-3 text-center whitespace-nowrap">Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {loadingWIP ? (
-                <tr><td colSpan={6} className="p-8 text-center">Loading WIP data...</td></tr>
+                <tr><td colSpan={isAdmin ? activeLocations.length + 4 : activeLocations.length + 3} className="p-8 text-center">Loading WIP data...</td></tr>
               ) : wips.length === 0 ? (
-                <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">No active WIP recorded.</td></tr>
-              ) : filteredWips.length === 0 ? (
-                <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">No matching WIP records found for current filters.</td></tr>
+                <tr><td colSpan={isAdmin ? activeLocations.length + 4 : activeLocations.length + 3} className="p-8 text-center text-muted-foreground">No active WIP recorded.</td></tr>
+              ) : groupedWips.length === 0 ? (
+                <tr><td colSpan={isAdmin ? activeLocations.length + 4 : activeLocations.length + 3} className="p-8 text-center text-muted-foreground">No matching WIP records found for current filters.</td></tr>
               ) : (
-                filteredWips.map((wip) => (
-                  <tr key={wip.id} className="hover:bg-muted/50 transition-colors">
-                    <td className="px-6 py-4 font-medium">{wip.item.itemCode}</td>
-                    <td className="px-6 py-4">
-                      <span className="bg-secondary px-2 py-1 rounded text-xs">{wip.location}</span>
-                    </td>
-                    <td className="px-6 py-4 text-right font-bold text-amber-500">{wip.quantity}</td>
-                    <td className="px-6 py-4 text-xs">
-                      {format(new Date(wip.estimatedFinish), 'dd MMM yyyy')}
-                    </td>
-                    <td className="px-6 py-4 text-xs text-muted-foreground">
-                      {wip.user?.name || 'System'}
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <div className="flex items-center justify-center gap-2">
-                        <button
-                          onClick={() => setEditModal({
-                            isOpen: true,
-                            data: {
-                              id: wip.id,
-                              itemCode: wip.item.itemCode,
-                              itemName: wip.item.itemName,
-                              location: wip.location,
-                              quantity: wip.quantity,
-                              progressPercent: wip.progressPercent,
-                              date: wip.date.split('T')[0],
-                              shift: wip.shift,
-                              estimatedFinish: wip.estimatedFinish.split('T')[0],
-                              status: wip.status,
-                              notes: wip.notes || '',
+                groupedWips.map((group: any) => (
+                  <tr key={group.id} className="hover:bg-muted/50 transition-colors">
+                    {isAdmin && (
+                      <td className="px-6 py-4 text-center">
+                        <input 
+                          type="checkbox" 
+                          checked={group.ids.length > 0 && group.ids.every((id: string) => selectedIds.includes(id))} 
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              const newIds = new Set([...selectedIds, ...group.ids]);
+                              setSelectedIds(Array.from(newIds));
+                            } else {
+                              setSelectedIds(selectedIds.filter(id => !group.ids.includes(id)));
                             }
-                          })}
-                          className="p-1.5 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950 rounded-md transition-colors"
-                          title="Edit Record"
-                        >
-                          <Edit2 size={16} />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(wip.id)}
-                          className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950 rounded-md transition-colors"
-                          title="Delete Record"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
+                          }} 
+                          className="rounded border-gray-300"
+                        />
+                      </td>
+                    )}
+                    <td className="px-6 py-4 font-medium whitespace-nowrap">{group.itemCode}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-muted-foreground">{group.recordedDate ? new Date(group.recordedDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}</td>
+                    {activeLocations.map(loc => (
+                      <td key={loc} className="px-6 py-4 text-right font-medium">
+                        {group.locations[loc]?.quantity > 0 ? (
+                          <span className="text-amber-600 dark:text-amber-500">{group.locations[loc].quantity}</span>
+                        ) : (
+                          <span className="text-muted-foreground/30">-</span>
+                        )}
+                      </td>
+                    ))}
+                    <td className="px-6 py-4 text-right font-bold text-slate-700 dark:text-slate-300 bg-muted/20">
+                      {group.total}
                     </td>
+                    {isAdmin && (
+                      <td className="px-6 py-4 text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => {
+                               if (!confirm('Are you sure you want to delete all WIP records for this Part Number?')) return;
+                               bulkDeleteWIP.mutateAsync({ ids: group.ids }).catch(err => alert(err.message || 'Failed to delete'));
+                            }}
+                            className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950 rounded-md transition-colors"
+                            title="Delete All WIP for this Part Number"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))
               )}
@@ -587,105 +610,7 @@ export function WIP() {
           </div>
         </div>
       )}
-      {/* Edit Modal */}
-      {editModal.isOpen && editModal.data && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-card text-card-foreground border rounded-lg shadow-lg max-w-2xl w-full p-6 space-y-4">
-            <div className="flex justify-between items-center">
-              <h3 className="text-lg font-bold">Edit WIP Record</h3>
-              <button 
-                type="button" 
-                onClick={() => setEditModal({ isOpen: false, data: null })}
-                className="text-muted-foreground hover:text-foreground text-sm"
-              >
-                ✕
-              </button>
-            </div>
-            <form onSubmit={handleEditSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm font-medium text-muted-foreground">Item & Location</label>
-                  <div className="font-semibold">{editModal.data.itemCode} - {editModal.data.itemName} <span className="mx-2 text-muted-foreground">|</span> {editModal.data.location}</div>
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Quantity</label>
-                  <input 
-                    type="number" required min="1"
-                    className="w-full h-10 px-3 border rounded-md bg-background"
-                    value={editModal.data.quantity} onChange={e => setEditModal(prev => ({...prev, data: {...prev.data, quantity: Number(e.target.value)}}))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Progress %</label>
-                  <input 
-                    type="number" required min="0" max="100"
-                    className="w-full h-10 px-3 border rounded-md bg-background"
-                    value={editModal.data.progressPercent} onChange={e => setEditModal(prev => ({...prev, data: {...prev.data, progressPercent: Number(e.target.value)}}))}
-                  />
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Date Recorded</label>
-                  <input 
-                    type="date" required
-                    className="w-full h-10 px-3 border rounded-md bg-background"
-                    value={editModal.data.date} onChange={e => setEditModal(prev => ({...prev, data: {...prev.data, date: e.target.value}}))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Shift</label>
-                  <select 
-                    className="w-full h-10 px-3 border rounded-md bg-background"
-                    value={editModal.data.shift} onChange={e => setEditModal(prev => ({...prev, data: {...prev.data, shift: Number(e.target.value)}}))}
-                  >
-                    <option value={1}>Shift 1</option>
-                    <option value={2}>Shift 2</option>
-                    <option value={3}>Shift 3</option>
-                  </select>
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Est. Finish Date</label>
-                  <input 
-                    type="date" required
-                    className="w-full h-10 px-3 border rounded-md bg-background"
-                    value={editModal.data.estimatedFinish} onChange={e => setEditModal(prev => ({...prev, data: {...prev.data, estimatedFinish: e.target.value}}))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Status</label>
-                  <select 
-                    className="w-full h-10 px-3 border rounded-md bg-background"
-                    value={editModal.data.status} onChange={e => setEditModal(prev => ({...prev, data: {...prev.data, status: e.target.value}}))}
-                  >
-                    <option value="IN_PROGRESS">IN PROGRESS</option>
-                    <option value="ON_HOLD">ON HOLD</option>
-                    <option value="DELAYED">DELAYED</option>
-                    <option value="COMPLETED">COMPLETED</option>
-                  </select>
-                </div>
 
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm font-medium">Notes</label>
-                  <input 
-                    type="text"
-                    className="w-full h-10 px-3 border rounded-md bg-background"
-                    value={editModal.data.notes} onChange={e => setEditModal(prev => ({...prev, data: {...prev.data, notes: e.target.value}}))}
-                  />
-                </div>
-              </div>
-              
-              <div className="flex justify-end gap-3 pt-4 border-t">
-                <button type="button" onClick={() => setEditModal({ isOpen: false, data: null })} className="h-10 border px-4 rounded-md font-medium hover:bg-muted transition-colors">Cancel</button>
-                <button type="submit" disabled={updateWIP.isPending} className="h-10 bg-primary text-primary-foreground hover:bg-primary/90 px-4 rounded-md font-medium flex items-center gap-2 transition-colors">
-                  <Save size={16} /> {updateWIP.isPending ? 'Saving...' : 'Save Changes'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -11,6 +11,8 @@ export interface DailySchedule {
     itemCode: string;
     itemName: string;
   };
+  masterCarton?: string;
+  toyName?: string;
 }
 
 export function useDailySchedules(date?: string, shift?: string) {
@@ -77,9 +79,25 @@ export function useBulkUpsertDailySchedule() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: (data: { records: Array<{ date: string; shift: number; itemCode: string; toyName?: string; quantity: number }>; saveMode: 'overwrite' | 'add' }) => 
+    mutationFn: (data: { records: Array<{ date: string; shift: number; itemCode: string; toyName?: string; masterCarton?: string; quantity: number }>; saveMode: 'overwrite' | 'add' }) => 
       fetchApi('/daily-schedule/bulk', {
         method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dailySchedules'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
+export function useBulkDeleteDailySchedule() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (data: { ids: string[] }) => 
+      fetchApi('/daily-schedule/bulk', {
+        method: 'DELETE',
         body: JSON.stringify(data),
       }),
     onSuccess: () => {

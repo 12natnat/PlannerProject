@@ -58,10 +58,27 @@ model Item {
   weeklySchedules WeeklySchedule[]
   fgStocks        FGStock[]
   wips            WIP[]
+  masterCartons   MasterCarton[]
 
   @@index([itemCode])
   @@index([itemName])
   @@map("items")
+}
+
+model MasterCarton {
+  id             String   @id @default(cuid())
+  cartonCode     String   @unique
+  toyNameItemId  String // Reference to Item (Toy Name)
+  partNumberCode String // Part number that belongs to this master carton
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  toyNameItem Item @relation(fields: [toyNameItemId], references: [id], onDelete: Cascade)
+
+  @@index([toyNameItemId])
+  @@index([partNumberCode])
+  @@map("master_cartons")
 }
 
 // ============================================
@@ -149,7 +166,6 @@ model WIP {
   progressPercent Int       @default(0) // 0-100
   date            DateTime  @db.Date
   shift           Int // 1, 2, or 3
-  estimatedFinish DateTime  @db.Date
   status          WIPStatus @default(IN_PROGRESS)
   notes           String?   @db.Text
   updatedBy       String

@@ -1,11 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useFGStocks, useUpsertFGStock, useBulkUpsertFGStock, useUpdateFGStock, useDeleteFGStock } from '../hooks/useFGStock';
+import { useFGStocks, useUpsertFGStock, useBulkUpsertFGStock, useUpdateFGStock, useDeleteFGStock, useBulkDeleteFGStock } from '../hooks/useFGStock';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { Box, Plus, Save, Search, Upload, Trash2, Edit2 } from 'lucide-react';
 import { format } from 'date-fns';
 import * as XLSX from 'xlsx';
+import { useAuthStore } from '../stores/authStore';
 
 export function FGStock() {
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
+  
   const [showForm, setShowForm] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -14,6 +18,9 @@ export function FGStock() {
   const upsertFG = useUpsertFGStock();
   const createItem = useCreateItem();
   const bulkUpsertFG = useBulkUpsertFGStock();
+  const bulkDeleteFG = useBulkDeleteFGStock();
+
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const [showImportModal, setShowImportModal] = useState(false);
   const [importData, setImportData] = useState<any[]>([]);
@@ -149,6 +156,28 @@ export function FGStock() {
     }
   };
 
+  const handleDeleteSelected = async () => {
+    if (selectedIds.length === 0) return;
+    if (!confirm(`Are you sure you want to delete ${selectedIds.length} selected records?`)) return;
+    try {
+      await bulkDeleteFG.mutateAsync({ ids: selectedIds });
+      setSelectedIds([]);
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete records');
+    }
+  };
+
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      const newIds = new Set([...selectedIds, ...filteredStocks.map(s => s.id)]);
+      setSelectedIds(Array.from(newIds));
+    } else {
+      const filteredSet = new Set(filteredStocks.map(s => s.id));
+      setSelectedIds(selectedIds.filter(id => !filteredSet.has(id)));
+    }
+  };
+  const allFilteredSelected = filteredStocks.length > 0 && filteredStocks.every(s => selectedIds.includes(s.id));
+
   const handleSubmit = async (e: React.FormEvent, saveMode: 'overwrite' | 'add') => {
     e.preventDefault();
     if (!formData.itemCode) return;
@@ -174,20 +203,24 @@ export function FGStock() {
           <p className="text-muted-foreground text-sm">Manage current warehouse ready-stock inventory.</p>
         </div>
         <div className="flex gap-2">
-          <button 
-            onClick={() => setShowImportModal(true)}
-            className="bg-secondary text-secondary-foreground border hover:bg-secondary/80 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
-          >
-            <Upload size={16} />
-            <span>Import Data</span>
-          </button>
-          <button 
-            onClick={() => setShowForm(!showForm)}
-            className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
-          >
-            <Plus size={16} />
-            <span>Update Stock Snapshot</span>
-          </button>
+          {isAdmin && (
+            <button 
+              onClick={() => setShowImportModal(true)}
+              className="bg-secondary text-secondary-foreground border hover:bg-secondary/80 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
+            >
+              <Upload size={16} />
+              <span>Import Data</span>
+            </button>
+          )}
+          {isAdmin && (
+            <button 
+              onClick={() => setShowForm(!showForm)}
+              className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
+            >
+              <Plus size={16} />
+              <span>Update Stock Snapshot</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -198,7 +231,7 @@ export function FGStock() {
           </h3>
           <p className="text-xs text-muted-foreground mb-4">Note: Providing an update for an Item will OVERWRITE its current total quantity in the system snapshot.</p>
           
-          <form className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-start">
+          <form className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-start">
             <div className="space-y-2 lg:col-span-2">
               <label className="text-sm font-medium">Part Number</label>
               <div className="flex gap-2" ref={dropdownRef}>
@@ -282,18 +315,6 @@ export function FGStock() {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Unit</label>
-              <select 
-                className="w-full h-10 px-3 border rounded-md bg-background"
-                value={formData.unit}
-                onChange={e => setFormData({...formData, unit: e.target.value})}
-              >
-                {units.map(u => (
-                  <option key={u} value={u}>{u}</option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-2">
               <label className="text-sm font-medium">Recorded Date</label>
               <input 
                 type="date" required
@@ -301,16 +322,7 @@ export function FGStock() {
                 value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})}
               />
             </div>
-            <div className="space-y-2 lg:col-span-5">
-              <label className="text-sm font-medium">Notes (Optional)</label>
-              <input 
-                type="text"
-                placeholder="E.g. After QC rejection, warehouse transfer, etc."
-                className="w-full h-10 px-3 border rounded-md bg-background"
-                value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})}
-              />
-            </div>
-            <div className="lg:col-span-5 flex justify-end gap-3 mt-2">
+            <div className="lg:col-span-4 flex justify-end gap-3 mt-2">
               <button type="button" onClick={() => setShowForm(false)} className="h-10 border px-6 rounded-md font-medium hover:bg-muted">Cancel</button>
               <button type="button" onClick={(e) => handleSubmit(e, 'add')} disabled={upsertFG.isPending} className="h-10 bg-green-600 hover:bg-green-700 text-white px-6 rounded-md font-medium flex items-center gap-2">
                 <Plus size={16} /> {upsertFG.isPending ? 'Saving...' : 'Save'}
@@ -324,7 +336,17 @@ export function FGStock() {
       )}
 
       <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
-        <div className="p-4 border-b bg-muted/10">
+        <div className="p-4 border-b bg-muted/10 flex flex-wrap items-center gap-3">
+          {isAdmin && selectedIds.length > 0 && (
+            <button 
+              onClick={handleDeleteSelected}
+              disabled={bulkDeleteFG.isPending}
+              className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-md font-medium text-sm flex items-center space-x-2 transition-colors mr-2"
+            >
+              <Trash2 size={16} />
+              <span>Delete Selected ({selectedIds.length})</span>
+            </button>
+          )}
           <div className="relative max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
             <input 
@@ -340,57 +362,77 @@ export function FGStock() {
           <table className="w-full text-sm text-left">
             <thead className="bg-secondary/50 text-muted-foreground uppercase text-xs font-medium">
               <tr>
+                {isAdmin && (
+                  <th className="px-6 py-3 w-12 text-center">
+                    <input type="checkbox" checked={allFilteredSelected} onChange={handleSelectAll} className="rounded border-gray-300" />
+                  </th>
+                )}
                 <th className="px-6 py-3">Part Number</th>
                 <th className="px-6 py-3 text-right">Available Qty</th>
-                <th className="px-6 py-3">Last Updated</th>
+                <th className="px-6 py-3">Recorded Date</th>
                 <th className="px-6 py-3">Updated By</th>
-                <th className="px-6 py-3 text-center">Actions</th>
+                {isAdmin && <th className="px-6 py-3 text-center">Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {loadingFG ? (
-                <tr><td colSpan={5} className="p-8 text-center">Loading stock data...</td></tr>
+                <tr><td colSpan={isAdmin ? 6 : 4} className="p-8 text-center">Loading stock data...</td></tr>
               ) : filteredStocks.length === 0 ? (
-                <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">No FG Stock found.</td></tr>
+                <tr><td colSpan={isAdmin ? 6 : 4} className="p-8 text-center text-muted-foreground">No FG Stock found.</td></tr>
               ) : (
                 filteredStocks.map((stock) => (
                   <tr key={stock.id} className="hover:bg-muted/50 transition-colors">
+                    {isAdmin && (
+                      <td className="px-6 py-4 text-center">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedIds.includes(stock.id)} 
+                          onChange={(e) => {
+                            if (e.target.checked) setSelectedIds([...selectedIds, stock.id]);
+                            else setSelectedIds(selectedIds.filter(id => id !== stock.id));
+                          }} 
+                          className="rounded border-gray-300"
+                        />
+                      </td>
+                    )}
                     <td className="px-6 py-4 font-medium">{stock.item.itemCode}</td>
                     <td className="px-6 py-4 text-right font-bold text-green-600 dark:text-green-500">{stock.quantity}</td>
                     <td className="px-6 py-4 text-xs">
-                      {format(new Date(stock.updatedAt), 'dd MMM yy HH:mm')}
+                      {format(new Date(stock.date || stock.updatedAt), 'dd MMM yyyy')}
                     </td>
                     <td className="px-6 py-4 text-xs text-muted-foreground">
                       {stock.user?.name || 'System'}
                     </td>
-                    <td className="px-6 py-4 text-center">
-                      <div className="flex items-center justify-center gap-2">
-                        <button
-                          onClick={() => setEditModal({
-                            isOpen: true,
-                            data: {
-                              id: stock.id,
-                              date: stock.date ? stock.date.split('T')[0] : new Date().toISOString().split('T')[0],
-                              quantity: stock.quantity,
-                              notes: stock.notes || '',
-                              itemCode: stock.item.itemCode,
-                              itemName: stock.item.itemName,
-                            }
-                          })}
-                          className="p-1.5 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950 rounded-md transition-colors"
-                          title="Edit Record"
-                        >
-                          <Edit2 size={16} />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(stock.id)}
-                          className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950 rounded-md transition-colors"
-                          title="Delete Record"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </td>
+                    {isAdmin && (
+                      <td className="px-6 py-4 text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => setEditModal({
+                              isOpen: true,
+                              data: {
+                                id: stock.id,
+                                date: stock.date ? stock.date.split('T')[0] : new Date().toISOString().split('T')[0],
+                                quantity: stock.quantity,
+                                notes: stock.notes || '',
+                                itemCode: stock.item.itemCode,
+                                itemName: stock.item.itemName,
+                              }
+                            })}
+                            className="p-1.5 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950 rounded-md transition-colors"
+                            title="Edit Record"
+                          >
+                            <Edit2 size={16} />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(stock.id)}
+                            className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950 rounded-md transition-colors"
+                            title="Delete Record"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))
               )}

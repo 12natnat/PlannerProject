@@ -57,7 +57,6 @@ export default async function trackingRoutes(server: FastifyInstance) {
         progress_pct: w.progressPercent,
         shift: w.shift,
         date: w.date.toISOString().split('T')[0],
-        estimated_finish: w.estimatedFinish.toISOString().split('T')[0],
         status: w.status,
       })),
     });
@@ -67,6 +66,7 @@ export default async function trackingRoutes(server: FastifyInstance) {
   server.get('/api/v1/tracking/dashboard', { preValidation: [authenticate] }, async (request, reply) => {
     const { date, shift } = request.query as { date?: string; shift?: string };
     const targetDate = date ? new Date(date) : new Date();
+    targetDate.setUTCHours(0, 0, 0, 0);
 
     const items = await prisma.item.findMany();
     
@@ -132,4 +132,150 @@ export default async function trackingRoutes(server: FastifyInstance) {
       wipStatus: wipStatusList,
     });
   });
+
+  // GET /api/v1/tracking/shortage-details
+  server.get('/api/v1/tracking/shortage-details', { preValidation: [authenticate] }, async (request, reply) => {
+    const { date } = request.query as { date?: string };
+    const targetDate = date ? new Date(date) : new Date();
+    targetDate.setUTCHours(0, 0, 0, 0);
+
+    // 1. Batch load data in 5 optimized queries
+    const items = await prisma.item.findMany();
+    const fgStocks = await prisma.fGStock.findMany();
+    const wips = await prisma.wIP.findMany({
+      where: {
+        status: { in: ['IN_PROGRESS', 'ON_HOLD', 'DELAYED'] }
+      }
+    });
+    const dailySchedules = await prisma.dailySchedule.findMany({
+      where: { date: targetDate }
+    });
+    const weeklySchedules = await prisma.weeklySchedule.findMany({
+      where: {
+        weekStartDate: { gte: targetDate }
+      },
+      orderBy: [{ weekStartDate: 'asc' }]
+    });
+
+    const masterCartons = await prisma.masterCarton.findMany({
+      include: { toyNameItem: true }
+    });
+    
+    // 2. Build maps for O(1) lookups
+    const fgStockMap = new Map<string, number>();
+    for (const stock of fgStocks) {
+      fgStockMap.set(stock.itemId, stock.quantity);
+    }
+
+    const wipMap = new Map<string, number>();
+    for (const wip of wips) {
+      const current = wipMap.get(wip.itemId) || 0;
+      wipMap.set(wip.itemId, current + wip.quantity);
+    }
+
+    const itemMap = new Map<string, typeof items[0]>();
+    for (const item of items) {
+      itemMap.set(item.id, item);
+    }
+
+    const mcMap = new Map<string, typeof masterCartons[0]>();
+    for (const mc of masterCartons) {
+      mcMap.set(mc.partNumberCode, mc);
+    }
+
+    // 3. Calculate Demands
+    const dailyDemandMap = new Map<string, number>();
+    for (const sched of dailySchedules) {
+      const current = dailyDemandMap.get(sched.itemId) || 0;
+      dailyDemandMap.set(sched.itemId, current + sched.quantity);
+    }
+
+    const weeklyDemandMap = new Map<string, number>();
+    for (const sched of weeklySchedules) {
+      const current = weeklyDemandMap.get(sched.itemId) || 0;
+      weeklyDemandMap.set(sched.itemId, current + sched.quantity);
+    }
+
+    // 4. Build Unified Shortages
+    const unifiedShortages = [];
+    let shiftShortagesCount = 0;
+    let dailyShortagesCount = 0;
+    let weeklyShortagesCount = 0;
+    
+    const countedDaily = new Set<string>();
+    const countedWeekly = new Set<string>();
+
+    for (const sched of dailySchedules) {
+      const item = itemMap.get(sched.itemId);
+      if (!item) continue;
+
+      const mc = mcMap.get(item.itemCode);
+      const toyName = mc ? mc.toyNameItem.itemName : '-';
+      const masterCarton = mc ? mc.cartonCode : '-';
+
+      const fgStock = fgStockMap.get(sched.itemId) || 0;
+      const wip = wipMap.get(sched.itemId) || 0;
+      const totalSupply = fgStock + wip;
+
+      const shiftDemand = sched.quantity;
+      const dailyDemand = dailyDemandMap.get(sched.itemId) || 0;
+      const weeklyDemand = weeklyDemandMap.get(sched.itemId) || 0;
+
+      const shiftGap = totalSupply - shiftDemand;
+      const dailyGap = totalSupply - dailyDemand;
+      const weeklyGap = totalSupply - weeklyDemand;
+
+      const dailyShortage = dailyGap < 0 ? Math.abs(dailyGap) : 0;
+      const weeklyShortage = weeklyGap < 0 ? Math.abs(weeklyGap) : 0;
+      
+      let isAnyShortage = false;
+
+      if (shiftGap < 0) {
+        shiftShortagesCount++;
+        isAnyShortage = true;
+      }
+      
+      if (dailyGap < 0) {
+        isAnyShortage = true;
+        if (!countedDaily.has(sched.itemId)) {
+          dailyShortagesCount++;
+          countedDaily.add(sched.itemId);
+        }
+      }
+      
+      if (weeklyGap < 0) {
+        isAnyShortage = true;
+        if (!countedWeekly.has(sched.itemId)) {
+          weeklyShortagesCount++;
+          countedWeekly.add(sched.itemId);
+        }
+      }
+
+      if (isAnyShortage) {
+        unifiedShortages.push({
+          itemId: sched.itemId,
+          toyName,
+          masterCarton,
+          itemCode: item.itemCode,
+          date: sched.date.toISOString().split('T')[0],
+          shift: sched.shift,
+          dailyDemand,
+          weeklyDemand,
+          fgStock,
+          wip,
+          dailyShortage,
+          weeklyShortage,
+          status: 'SHORTAGE',
+        });
+      }
+    }
+
+    return reply.send({
+      unifiedShortages,
+      shiftShortagesCount,
+      dailyShortagesCount,
+      weeklyShortagesCount
+    });
+  });
 }
+

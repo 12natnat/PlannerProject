@@ -1,0 +1,209 @@
+import { useState, useMemo } from 'react';
+import { useShortageDetails } from '../hooks/useShortageDetails';
+import { AlertCircle, Calendar, Search, CalendarRange, Clock, ShieldAlert } from 'lucide-react';
+
+export function ShortageDetail() {
+  const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [shiftFilter, setShiftFilter] = useState<string>('all');
+  
+  const { data, isLoading, error } = useShortageDetails(selectedDate);
+
+  const filteredShortages = useMemo(() => {
+    if (!data?.unifiedShortages) return [];
+    return data.unifiedShortages.filter(item => {
+      const matchesSearch = 
+        item.itemCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.toyName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.masterCarton.toLowerCase().includes(searchQuery.toLowerCase());
+      
+      const matchesShift = 
+        shiftFilter === 'all' || item.shift === parseInt(shiftFilter);
+
+      return matchesSearch && matchesShift;
+    });
+  }, [data?.unifiedShortages, searchQuery, shiftFilter]);
+
+  if (isLoading) {
+    return (
+      <div className="flex h-64 items-center justify-center text-muted-foreground">
+        <div className="flex flex-col items-center gap-2">
+          <Clock className="animate-spin text-primary" size={24} />
+          <span>Loading shortage details...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-destructive/15 text-destructive p-4 rounded-md">
+        Error loading shortage details: {error.message}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div>
+        <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <ShieldAlert size={24} className="text-destructive animate-pulse" /> Shortage Details
+        </h2>
+        <p className="text-muted-foreground text-sm">
+          Monitor and analyze critical shortages across production shifts, daily aggregations, and weekly plans.
+        </p>
+      </div>
+
+      {/* Premium Filter Toolbar */}
+      <div className="bg-card text-card-foreground p-4 border rounded-lg shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-3 flex-1">
+          {/* Date Filter */}
+          <div className="relative min-w-[200px]">
+            <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+            <input
+              type="date"
+              className="w-full h-10 pl-9 pr-3 border rounded-md bg-background text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+            />
+          </div>
+
+          {/* Search Box */}
+          <div className="relative flex-1 min-w-[240px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+            <input
+              type="text"
+              placeholder="Search by Part Number / Toy Name / Carton..."
+              className="w-full h-10 pl-9 pr-3 border rounded-md bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {/* Tab Specific Filters */}
+        <div className="flex items-center gap-3">
+          <select
+            className="h-10 px-3 border rounded-md bg-background text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary"
+            value={shiftFilter}
+            onChange={(e) => setShiftFilter(e.target.value)}
+          >
+            <option value="all">All Shifts</option>
+            <option value="1">Shift 1</option>
+            <option value="2">Shift 2</option>
+            <option value="3">Shift 3</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-card text-card-foreground shadow-sm border rounded-lg p-6 text-left">
+          <div className="flex justify-between items-start">
+            <div>
+              <h3 className="text-muted-foreground font-medium mb-1 text-sm">Shift Shortages</h3>
+              <p className="text-3xl font-bold text-destructive">
+                {data?.shiftShortagesCount || 0}
+              </p>
+            </div>
+            <Clock className="text-muted-foreground" />
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">Critical shortages calculated per individual shift.</p>
+        </div>
+
+        <div className="bg-card text-card-foreground shadow-sm border rounded-lg p-6 text-left">
+          <div className="flex justify-between items-start">
+            <div>
+              <h3 className="text-muted-foreground font-medium mb-1 text-sm">Daily Shortages</h3>
+              <p className="text-3xl font-bold text-destructive">
+                {data?.dailyShortagesCount || 0}
+              </p>
+            </div>
+            <Calendar className="text-muted-foreground" />
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">Shortages matching aggregated demand for the entire day.</p>
+        </div>
+
+        <div className="bg-card text-card-foreground shadow-sm border rounded-lg p-6 text-left">
+          <div className="flex justify-between items-start">
+            <div>
+              <h3 className="text-muted-foreground font-medium mb-1 text-sm">Weekly Shortages</h3>
+              <p className="text-3xl font-bold text-destructive">
+                {data?.weeklyShortagesCount || 0}
+              </p>
+            </div>
+            <CalendarRange className="text-muted-foreground" />
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">Shortages reflecting active weekly demand plans.</p>
+        </div>
+      </div>
+
+      {/* Details Table */}
+      <div className="bg-card text-card-foreground shadow-sm border rounded-lg overflow-hidden">
+        <div className="p-6 border-b flex justify-between items-center bg-muted/10">
+          <h3 className="text-lg font-semibold flex items-center gap-2">
+            <AlertCircle size={18} className="text-destructive" />
+            Shortage Details
+          </h3>
+          <span className="text-xs text-muted-foreground font-medium bg-secondary px-2.5 py-1 rounded-full">
+            {filteredShortages.length} records found
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="text-xs text-muted-foreground uppercase bg-secondary/50">
+              <tr>
+                <th className="px-6 py-3 font-semibold">Toy Name</th>
+                <th className="px-6 py-3 font-semibold">Master Carton</th>
+                <th className="px-6 py-3 font-semibold">Part Number</th>
+                <th className="px-6 py-3 font-semibold text-center">Date</th>
+                <th className="px-6 py-3 font-semibold text-center">Shift</th>
+                <th className="px-6 py-3 font-semibold text-right">Daily Demand</th>
+                <th className="px-6 py-3 font-semibold text-right">Weekly Demand</th>
+                <th className="px-6 py-3 font-semibold text-right">FG Stock</th>
+                <th className="px-6 py-3 font-semibold text-right">WIP</th>
+                <th className="px-6 py-3 font-semibold text-right text-destructive">Daily Shortage</th>
+                <th className="px-6 py-3 font-semibold text-right text-destructive">Weekly Shortage</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {filteredShortages.length === 0 ? (
+                <tr>
+                  <td colSpan={11} className="px-6 py-8 text-center text-muted-foreground">
+                    No shortage details found.
+                  </td>
+                </tr>
+              ) : (
+                filteredShortages.map((item, idx) => (
+                  <tr key={`${item.itemCode}-${item.shift}-${idx}`} className="hover:bg-muted/50 transition-colors">
+                    <td className="px-6 py-4 max-w-[180px] truncate" title={item.toyName}>{item.toyName}</td>
+                    <td className="px-6 py-4 font-medium">{item.masterCarton}</td>
+                    <td className="px-6 py-4 font-semibold text-foreground">{item.itemCode}</td>
+                    <td className="px-6 py-4 text-center text-muted-foreground font-medium">{item.date}</td>
+                    <td className="px-6 py-4 text-center">
+                      <span className="bg-primary/10 text-primary px-2.5 py-1 rounded text-xs font-semibold">
+                        Shift {item.shift}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-right font-medium">{item.dailyDemand.toLocaleString()}</td>
+                    <td className="px-6 py-4 text-right font-medium">{item.weeklyDemand.toLocaleString()}</td>
+                    <td className="px-6 py-4 text-right font-medium text-green-600 dark:text-green-500">{item.fgStock.toLocaleString()}</td>
+                    <td className="px-6 py-4 text-right font-medium text-amber-500">{item.wip.toLocaleString()}</td>
+                    <td className="px-6 py-4 text-right font-bold text-destructive bg-destructive/5">
+                      {item.dailyShortage.toLocaleString()}
+                    </td>
+                    <td className="px-6 py-4 text-right font-bold text-destructive bg-destructive/5">
+                      {item.weeklyShortage.toLocaleString()}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}

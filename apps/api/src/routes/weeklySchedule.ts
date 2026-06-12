@@ -25,20 +25,41 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
     return reply.send({ data: schedules });
   });
 
-  // GET /api/v1/weekly-schedule/summary - Group by item, all weeks as columns
+  // GET /api/v1/weekly-schedule/summary - Group by item, with W1-W26 relative to today.
+  // W1 = first week whose weekStartDate >= today (today aligned to 00:00).
   server.get('/api/v1/weekly-schedule/summary', { preValidation: [authenticate] }, async (request, reply) => {
-    const { year } = request.query as { year?: string };
-    const targetYear = year ? parseInt(year) : new Date().getFullYear();
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
 
+    // Fetch only schedules whose week has not ended yet (anchor = today).
+    // Sorting by weekStartDate gives chronological order.
     const schedules = await prisma.weeklySchedule.findMany({
-      where: { year: targetYear },
+      where: { weekStartDate: { gte: today } },
       include: { item: true },
-      orderBy: [{ weekNumber: 'asc' }],
+      orderBy: [{ weekStartDate: 'asc' }],
     });
 
-    // Group by item
+    // Map every distinct weekStartDate to a relative position (W1, W2, ...).
+    const uniqueStarts: number[] = [];
+    const seenStarts = new Set<number>();
+    for (const s of schedules) {
+      const ts = s.weekStartDate.getTime();
+      if (!seenStarts.has(ts)) {
+        seenStarts.add(ts);
+        uniqueStarts.push(ts);
+      }
+    }
+    uniqueStarts.sort((a, b) => a - b);
+    const limitedStarts = uniqueStarts.slice(0, 26); // cap at 26 weeks
+    const relWeekByStart: Record<number, number> = {};
+    limitedStarts.forEach((ts, idx) => {
+      relWeekByStart[ts] = idx + 1;
+    });
+
     const itemMap: Record<string, any> = {};
     for (const s of schedules) {
+      const relW = relWeekByStart[s.weekStartDate.getTime()];
+      if (!relW) continue; // beyond W26
       if (!itemMap[s.itemId]) {
         itemMap[s.itemId] = {
           itemId: s.itemId,
@@ -48,7 +69,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
           total: 0,
         };
       }
-      itemMap[s.itemId].weeks[s.weekNumber] = {
+      itemMap[s.itemId].weeks[relW] = {
         id: s.id,
         quantity: s.quantity,
         weekStartDate: s.weekStartDate,
@@ -57,7 +78,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       itemMap[s.itemId].total += s.quantity;
     }
 
-    return reply.send({ data: Object.values(itemMap), year: targetYear });
+    return reply.send({ data: Object.values(itemMap), year: today.getFullYear() });
   });
 
   // POST /api/v1/weekly-schedule (single upsert)
@@ -65,7 +86,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
     '/api/v1/weekly-schedule',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { year, weekNumber, weekStartDate, weekEndDate, itemId, itemCode, toyName, quantity, saveMode } =
+      const { year, weekNumber, weekStartDate, weekEndDate, itemId, itemCode, description, quantity, saveMode } =
         request.body as any;
 
       if (!year || !weekNumber || !quantity === undefined || (!itemId && !itemCode)) {
@@ -77,10 +98,10 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
         let item = await prisma.item.findUnique({ where: { itemCode } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: toyName || itemCode, unit: 'PCS' },
+            data: { itemCode, itemName: description || itemCode, unit: 'PCS' },
           });
-        } else if (toyName && item.itemName !== toyName) {
-          item = await prisma.item.update({ where: { id: item.id }, data: { itemName: toyName } });
+        } else if (description && item.itemName !== description) {
+          item = await prisma.item.update({ where: { id: item.id }, data: { itemName: description } });
         }
         finalItemId = item.id;
       }
@@ -148,10 +169,10 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       // ── Step 1: Batch-resolve items ──────────────────────────────────────────
       const uniqueCodes = [...new Set(validRecords.map((r: any) => r.itemCode as string))];
 
-      // Build toyName map (first occurrence wins)
+      // Build description map (first occurrence wins)
       const toyNameMap: Record<string, string> = {};
       for (const r of validRecords) {
-        if (!toyNameMap[r.itemCode]) toyNameMap[r.itemCode] = r.toyName || r.itemCode;
+        if (!toyNameMap[r.itemCode]) toyNameMap[r.itemCode] = r.description || r.itemCode;
       }
 
       // Fetch all existing items in one query
@@ -180,6 +201,33 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
             prisma.item.update({ where: { id: item.id }, data: { itemName: toyNameMap[item.itemCode] } }),
           ),
         );
+      }
+
+      if (saveMode === 'overwrite') {
+        const scopeMap = new Map<string, { year: number; weekNumber: number; itemIds: Set<string> }>();
+        for (const r of validRecords) {
+          const year = parseInt(r.year);
+          const weekNumber = parseInt(r.weekNumber);
+          const key = `${year}_${weekNumber}`;
+          
+          if (!scopeMap.has(key)) {
+            scopeMap.set(key, { year, weekNumber, itemIds: new Set() });
+          }
+          const itemId = itemCodeToId[r.itemCode];
+          if (itemId) {
+            scopeMap.get(key)!.itemIds.add(itemId);
+          }
+        }
+
+        for (const scope of scopeMap.values()) {
+          await prisma.weeklySchedule.deleteMany({
+            where: {
+              year: scope.year,
+              weekNumber: scope.weekNumber,
+              itemId: { notIn: Array.from(scope.itemIds) }
+            }
+          });
+        }
       }
 
       // ── Step 2: Fetch all existing schedules for the years in one query ──────
@@ -295,6 +343,34 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       });
 
       return reply.send({ data: schedule });
+    }
+  );
+
+  // DELETE /api/v1/weekly-schedule/bulk
+  server.delete(
+    '/api/v1/weekly-schedule/bulk',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    async (request, reply) => {
+      const { ids } = request.body as { ids: string[] };
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return reply.code(400).send({ error: 'Bad Request', message: 'No ids provided' });
+      }
+
+      await prisma.weeklySchedule.deleteMany({
+        where: { id: { in: ids } },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: request.user!.id,
+          action: 'DELETE',
+          entityType: 'WeeklySchedule',
+          entityId: 'bulk',
+          notes: `Bulk deleted ${ids.length} records`,
+        },
+      });
+
+      return reply.send({ success: true, count: ids.length });
     }
   );
 

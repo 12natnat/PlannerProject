@@ -11,6 +11,119 @@ export default async function itemsRoutes(server: FastifyInstance) {
     return reply.send({ data: items });
   });
 
+  // Get all master cartons
+  server.get('/api/v1/master-cartons', { preValidation: [authenticate] }, async (request, reply) => {
+    const mcs = await prisma.masterCarton.findMany({
+      orderBy: { cartonCode: 'asc' },
+    });
+    return reply.send({ data: mcs });
+  });
+
+  // Create master carton
+  server.post(
+    '/api/v1/master-cartons',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    async (request, reply) => {
+      const { cartonCode, toyNameItemId, partNumberCode } = request.body as any;
+
+      if (!cartonCode || !toyNameItemId || !partNumberCode) {
+        return reply.code(400).send({ error: 'Bad Request', message: 'cartonCode, toyNameItemId, and partNumberCode are required' });
+      }
+
+      const existingMc = await prisma.masterCarton.findUnique({ where: { cartonCode } });
+      if (existingMc) {
+        return reply.code(409).send({ error: 'Conflict', message: 'Master Carton code already exists' });
+      }
+
+      const newMc = await prisma.masterCarton.create({
+        data: { cartonCode, toyNameItemId, partNumberCode },
+      });
+
+      // Audit Log
+      await prisma.auditLog.create({
+        data: {
+          userId: request.user!.id,
+          action: 'CREATE',
+          entityType: 'MasterCarton',
+          entityId: newMc.id,
+          dataAfter: newMc as any,
+        },
+      });
+
+      return reply.code(201).send({ data: newMc });
+    }
+  );
+
+  // Update master carton
+  server.put(
+    '/api/v1/master-cartons/:id',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const { cartonCode, toyNameItemId, partNumberCode } = request.body as any;
+
+      const existingMc = await prisma.masterCarton.findUnique({ where: { id } });
+      if (!existingMc) {
+        return reply.code(404).send({ error: 'Not Found', message: 'Master Carton not found' });
+      }
+
+      if (cartonCode && cartonCode !== existingMc.cartonCode) {
+        const mcExists = await prisma.masterCarton.findUnique({ where: { cartonCode } });
+        if (mcExists) {
+          return reply.code(409).send({ error: 'Conflict', message: 'Master Carton code already exists' });
+        }
+      }
+
+      const updatedMc = await prisma.masterCarton.update({
+        where: { id },
+        data: { cartonCode, toyNameItemId, partNumberCode },
+      });
+
+      // Audit Log
+      await prisma.auditLog.create({
+        data: {
+          userId: request.user!.id,
+          action: 'UPDATE',
+          entityType: 'MasterCarton',
+          entityId: updatedMc.id,
+          dataBefore: existingMc as any,
+          dataAfter: updatedMc as any,
+        },
+      });
+
+      return reply.send({ data: updatedMc });
+    }
+  );
+
+  // Delete master carton
+  server.delete(
+    '/api/v1/master-cartons/:id',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      const existingMc = await prisma.masterCarton.findUnique({ where: { id } });
+      if (!existingMc) {
+        return reply.code(404).send({ error: 'Not Found', message: 'Master Carton not found' });
+      }
+
+      await prisma.masterCarton.delete({ where: { id } });
+
+      // Audit Log
+      await prisma.auditLog.create({
+        data: {
+          userId: request.user!.id,
+          action: 'DELETE',
+          entityType: 'MasterCarton',
+          entityId: id,
+          dataBefore: existingMc as any,
+        },
+      });
+
+      return reply.send({ message: 'Master Carton deleted successfully' });
+    }
+  );
+
   // Search items
   server.get('/api/v1/items/search', { preValidation: [authenticate] }, async (request, reply) => {
     const { q } = request.query as { q?: string };

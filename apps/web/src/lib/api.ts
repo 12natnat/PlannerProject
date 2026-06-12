@@ -21,6 +21,8 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): 
     // Basic implementation: logout on 401. 
     // In a real app, this should try to use the refresh token first.
     logout();
+    // Redirect to login page after session expired
+    window.location.href = '/login';
     throw new Error('Unauthorized');
   }
 

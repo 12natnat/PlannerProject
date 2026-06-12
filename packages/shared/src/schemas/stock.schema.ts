@@ -17,7 +17,6 @@ export const createWIPSchema = z.object({
   progressPercent: z.number().min(0).max(100),
   date: z.string().or(z.date()),
   shift: z.number().int().min(1).max(3),
-  estimatedFinish: z.string().or(z.date()),
   status: z.enum(['IN_PROGRESS', 'ON_HOLD', 'DELAYED', 'COMPLETED']),
   notes: z.string().optional(),
 });
