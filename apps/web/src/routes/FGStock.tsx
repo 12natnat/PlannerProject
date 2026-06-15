@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useFGStocks, useUpsertFGStock, useBulkUpsertFGStock, useUpdateFGStock, useDeleteFGStock, useBulkDeleteFGStock } from '../hooks/useFGStock';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { Box, Plus, Save, Search, Upload, Trash2, Edit2 } from 'lucide-react';
@@ -31,8 +31,6 @@ export function FGStock() {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const [units, setUnits] = useState<string[]>([]);
-
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -40,18 +38,6 @@ export function FGStock() {
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
-    
-    // Load Units from localStorage
-    const stored = localStorage.getItem('pdits_units');
-    if (stored) {
-      try {
-        setUnits(JSON.parse(stored));
-      } catch (e) {
-        setUnits(['pcs', 'kg', 'box', 'liters']);
-      }
-    } else {
-      setUnits(['pcs', 'kg', 'box', 'liters']);
-    }
 
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
@@ -66,6 +52,11 @@ export function FGStock() {
 
   const stocks = fgData?.data || [];
   const items = itemsData?.data || [];
+
+  const units = useMemo(() => {
+    const activeUnits = Array.from(new Set(items.map(item => item.unit).filter(Boolean)));
+    return activeUnits.length > 0 ? activeUnits : ['pcs', 'kg', 'box', 'liters'];
+  }, [items]);
 
   const filteredStocks = stocks.filter(stock => {
     if (!searchQuery) return true;

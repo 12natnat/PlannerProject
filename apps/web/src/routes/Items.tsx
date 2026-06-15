@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useItems, useCreateItem, useDeleteItem, useUpdateItem, useMasterCartons, useCreateMasterCarton, useUpdateMasterCarton, useDeleteMasterCarton } from '../hooks/useItems';
 import { useWIPs } from '../hooks/useWIP';
+import { SearchableSelect } from '../components/SearchableSelect';
 import { Plus, Trash2, Pencil, Search, PackageOpen, Sliders, Scale, MapPin, Box, Tag, Layers } from 'lucide-react';
 
 export function Items() {
@@ -8,9 +9,22 @@ export function Items() {
   const { data: wipData } = useWIPs();
   
   const wips = wipData?.data || [];
+  const items = data?.data || [];
+
   const activeLocations = useMemo(() => {
     return Array.from(new Set(wips.map((w: any) => w.location))).filter(Boolean) as string[];
   }, [wips]);
+
+  const units = useMemo(() => {
+    const activeUnits = Array.from(new Set(items.map((i: any) => i.unit))).filter(Boolean) as string[];
+    const defaultUnits = ['pcs', 'kg', 'box', 'liters'];
+    return activeUnits.length > 0 ? activeUnits : defaultUnits;
+  }, [items]);
+
+  const allLocations = useMemo(() => {
+    const defaultLocations = ['Mesin-01', 'Mesin-02', 'Assembly Line', 'QC Station'];
+    return activeLocations.length > 0 ? activeLocations : defaultLocations;
+  }, [activeLocations]);
 
   const createItem = useCreateItem();
   const deleteItem = useDeleteItem();
@@ -29,6 +43,22 @@ export function Items() {
   const [editingToy, setEditingToy] = useState<{ id: string; itemCode: string; itemName: string; unit: string } | null>(null);
   const [toyFormData, setToyFormData] = useState({ itemCode: '', itemName: '', unit: 'SET' });
 
+  const itemUnitOptions = useMemo(() => {
+    const opts = units.map(u => ({ value: u, label: u }));
+    if (itemFormData.unit && !units.includes(itemFormData.unit)) {
+      opts.push({ value: itemFormData.unit, label: itemFormData.unit });
+    }
+    return opts;
+  }, [units, itemFormData.unit]);
+
+  const toyUnitOptions = useMemo(() => {
+    const opts = units.map(u => ({ value: u, label: u }));
+    if (toyFormData.unit && !units.includes(toyFormData.unit)) {
+      opts.push({ value: toyFormData.unit, label: toyFormData.unit });
+    }
+    return opts;
+  }, [units, toyFormData.unit]);
+
   // 1c. Master Cartons Form & Edit State
   const { data: mcData } = useMasterCartons();
   const createMasterCarton = useCreateMasterCarton();
@@ -39,65 +69,7 @@ export function Items() {
   const [editingMc, setEditingMc] = useState<{ id: string; cartonCode: string; toyNameItemId: string; partNumberCode: string } | null>(null);
   const [mcFormData, setMcFormData] = useState({ cartonCode: '', toyNameItemId: '', partNumberCode: '' });
 
-  // 2. Units Storage & Form & Edit State
-  const [units, setUnits] = useState<string[]>([]);
-  const [editingUnit, setEditingUnit] = useState<string | null>(null);
-  const [newUnit, setNewUnit] = useState('');
-
-  // 3. Locations Storage & Form & Edit State
-  const [locations, setLocations] = useState<string[]>([]);
-  const [editingLocation, setEditingLocation] = useState<string | null>(null);
-  const [newLocation, setNewLocation] = useState('');
-
-  const allLocations = useMemo(() => {
-    return Array.from(new Set([...locations, ...activeLocations])).filter(Boolean);
-  }, [locations, activeLocations]);
-
-  // Load Units and Locations from localStorage on mount
-  useEffect(() => {
-    const storedUnits = localStorage.getItem('pdits_units');
-    if (storedUnits) {
-      try { setUnits(JSON.parse(storedUnits)); } catch (e) { setUnits(['pcs', 'kg', 'box', 'liters']); }
-    } else {
-      const defaultUnits = ['pcs', 'kg', 'box', 'liters'];
-      setUnits(defaultUnits);
-      localStorage.setItem('pdits_units', JSON.stringify(defaultUnits));
-    }
-
-    const storedLocations = localStorage.getItem('pdits_locations');
-    const defaultLocations = ['Mesin-01', 'Mesin-02', 'Assembly Line', 'QC Station'];
-    if (storedLocations) {
-      try {
-        const parsed = JSON.parse(storedLocations);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setLocations(parsed);
-        } else {
-          setLocations(defaultLocations);
-          localStorage.setItem('pdits_locations', JSON.stringify(defaultLocations));
-        }
-      } catch (e) {
-        setLocations(defaultLocations);
-        localStorage.setItem('pdits_locations', JSON.stringify(defaultLocations));
-      }
-    } else {
-      setLocations(defaultLocations);
-      localStorage.setItem('pdits_locations', JSON.stringify(defaultLocations));
-    }
-  }, []);
-
-  // Update localStorage when units or locations change
-  const saveUnits = (newUnits: string[]) => {
-    setUnits(newUnits);
-    localStorage.setItem('pdits_units', JSON.stringify(newUnits));
-  };
-
-  const saveLocations = (newLocs: string[]) => {
-    setLocations(newLocs);
-    localStorage.setItem('pdits_locations', JSON.stringify(newLocs));
-  };
-
   // CRUD for Part Numbers & Toy Names
-  const items = data?.data || [];
   
   // Filter items into Part Numbers (itemName === itemCode)
   const partNumbers = items.filter(item => item.itemCode === item.itemName);
@@ -211,69 +183,7 @@ export function Items() {
     }
   };
 
-  // CRUD for Units
-  const handleAddUnit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const formattedUnit = newUnit.trim().toLowerCase();
-    if (!formattedUnit) return;
 
-    if (editingUnit) {
-      if (formattedUnit !== editingUnit && units.includes(formattedUnit)) {
-        alert('Unit already exists!');
-        return;
-      }
-      const updated = units.map(u => u === editingUnit ? formattedUnit : u);
-      saveUnits(updated);
-      setEditingUnit(null);
-    } else {
-      if (units.includes(formattedUnit)) {
-        alert('Unit already exists!');
-        return;
-      }
-      const updated = [...units, formattedUnit];
-      saveUnits(updated);
-    }
-    setNewUnit('');
-  };
-
-  const handleDeleteUnit = (unitToDelete: string) => {
-    if (confirm(`Are you sure you want to delete unit "${unitToDelete}"?`)) {
-      const updated = units.filter(u => u !== unitToDelete);
-      saveUnits(updated);
-    }
-  };
-
-  // CRUD for Locations
-  const handleAddLocation = (e: React.FormEvent) => {
-    e.preventDefault();
-    const formattedLoc = newLocation.trim();
-    if (!formattedLoc) return;
-
-    if (editingLocation) {
-      if (formattedLoc.toLowerCase() !== editingLocation.toLowerCase() && allLocations.some(l => l.toLowerCase() === formattedLoc.toLowerCase())) {
-        alert('Location already exists!');
-        return;
-      }
-      const updated = locations.map(l => l === editingLocation ? formattedLoc : l);
-      saveLocations(updated);
-      setEditingLocation(null);
-    } else {
-      if (allLocations.some(l => l.toLowerCase() === formattedLoc.toLowerCase())) {
-        alert('Location already exists!');
-        return;
-      }
-      const updated = [...locations, formattedLoc];
-      saveLocations(updated);
-    }
-    setNewLocation('');
-  };
-
-  const handleDeleteLocation = (locToDelete: string) => {
-    if (confirm(`Are you sure you want to delete location "${locToDelete}"?`)) {
-      const updated = locations.filter(l => l !== locToDelete);
-      saveLocations(updated);
-    }
-  };
 
   if (isLoading) {
     return <div className="p-8 text-center text-muted-foreground">Loading dropdown settings...</div>;
@@ -292,7 +202,7 @@ export function Items() {
       {/* Tabs */}
       <div className="flex border-b border-border space-x-1 bg-muted/30 p-1 rounded-lg max-w-2xl overflow-x-auto">
         <button
-          onClick={() => { setActiveTab('items'); setSearch(''); setEditingItem(null); setEditingUnit(null); setEditingLocation(null); setShowItemForm(false); }}
+          onClick={() => { setActiveTab('items'); setSearch(''); setEditingItem(null); setShowItemForm(false); }}
           className={`flex-shrink-0 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-md transition-colors ${
             activeTab === 'items'
               ? 'bg-background text-foreground shadow-sm'
@@ -303,7 +213,7 @@ export function Items() {
           <span>Part Numbers</span>
         </button>
         <button
-          onClick={() => { setActiveTab('toy_names'); setSearch(''); setEditingItem(null); setEditingToy(null); setEditingUnit(null); setEditingLocation(null); setShowToyForm(false); }}
+          onClick={() => { setActiveTab('toy_names'); setSearch(''); setEditingItem(null); setEditingToy(null); setShowToyForm(false); }}
           className={`flex-shrink-0 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-md transition-colors ${
             activeTab === 'toy_names'
               ? 'bg-background text-foreground shadow-sm'
@@ -314,7 +224,7 @@ export function Items() {
           <span>Toy Names</span>
         </button>
         <button
-          onClick={() => { setActiveTab('master_cartons'); setSearch(''); setEditingItem(null); setEditingMc(null); setEditingUnit(null); setEditingLocation(null); setShowMcForm(false); }}
+          onClick={() => { setActiveTab('master_cartons'); setSearch(''); setEditingItem(null); setEditingMc(null); setShowMcForm(false); }}
           className={`flex-shrink-0 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-md transition-colors ${
             activeTab === 'master_cartons'
               ? 'bg-background text-foreground shadow-sm'
@@ -325,7 +235,7 @@ export function Items() {
           <span>Master Cartons</span>
         </button>
         <button
-          onClick={() => { setActiveTab('units'); setSearch(''); setEditingItem(null); setEditingUnit(null); setEditingLocation(null); }}
+          onClick={() => { setActiveTab('units'); setSearch(''); setEditingItem(null); }}
           className={`flex-shrink-0 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-md transition-colors ${
             activeTab === 'units'
               ? 'bg-background text-foreground shadow-sm'
@@ -336,7 +246,7 @@ export function Items() {
           <span>Measurement Units</span>
         </button>
         <button
-          onClick={() => { setActiveTab('locations'); setSearch(''); setEditingItem(null); setEditingUnit(null); setEditingLocation(null); }}
+          onClick={() => { setActiveTab('locations'); setSearch(''); setEditingItem(null); }}
           className={`flex-shrink-0 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-md transition-colors ${
             activeTab === 'locations'
               ? 'bg-background text-foreground shadow-sm'
@@ -392,17 +302,17 @@ export function Items() {
                     placeholder="e.g. Component X"
                   />
                 </div>
-                <div className="w-32 space-y-2">
+                <div className="w-48 space-y-2">
                   <label className="text-sm font-medium text-muted-foreground">Unit</label>
-                  <select 
-                    className="w-full h-10 px-3 py-2 border rounded-md bg-background"
+                  <SearchableSelect
+                    options={itemUnitOptions}
                     value={itemFormData.unit}
-                    onChange={e => setItemFormData({...itemFormData, unit: e.target.value})}
-                  >
-                    {units.map(u => (
-                      <option key={u} value={u}>{u}</option>
-                    ))}
-                  </select>
+                    onChange={val => setItemFormData({ ...itemFormData, unit: val })}
+                    onAdd={newUnitVal => {
+                      setItemFormData({ ...itemFormData, unit: newUnitVal });
+                    }}
+                    placeholder="Select or type unit..."
+                  />
                 </div>
                 <button 
                   type="submit" 
@@ -545,17 +455,17 @@ export function Items() {
                     placeholder="e.g. Barbie Milan Edition"
                   />
                 </div>
-                <div className="w-32 space-y-2">
+                <div className="w-48 space-y-2">
                   <label className="text-sm font-medium text-muted-foreground">Unit</label>
-                  <select 
-                    className="w-full h-10 px-3 py-2 border rounded-md bg-background"
+                  <SearchableSelect
+                    options={toyUnitOptions}
                     value={toyFormData.unit}
-                    onChange={e => setToyFormData({...toyFormData, unit: e.target.value})}
-                  >
-                    {units.map(u => (
-                      <option key={u} value={u}>{u}</option>
-                    ))}
-                  </select>
+                    onChange={val => setToyFormData({ ...toyFormData, unit: val })}
+                    onAdd={newUnitVal => {
+                      setToyFormData({ ...toyFormData, unit: newUnitVal });
+                    }}
+                    placeholder="Select or type unit..."
+                  />
                 </div>
                 <button 
                   type="submit" 
@@ -816,82 +726,24 @@ export function Items() {
 
       {/* Tab Contents: 2. Measurement Units */}
       {activeTab === 'units' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-1 space-y-4">
-            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-              <h3 className="font-semibold text-base mb-4">{editingUnit ? 'Edit Unit Option' : 'Add New Unit'}</h3>
-              <form onSubmit={handleAddUnit} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">Unit Name</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. roll, pack, gram"
-                    className="w-full h-10 px-3 py-2 border rounded-md bg-background"
-                    value={newUnit}
-                    onChange={e => setNewUnit(e.target.value)}
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <button
-                    type="submit"
-                    className="w-full h-10 bg-primary text-primary-foreground hover:bg-primary/90 px-4 rounded-md font-medium text-sm flex items-center justify-center gap-2"
-                  >
-                    {editingUnit ? <Pencil size={16} /> : <Plus size={16} />}
-                    <span>{editingUnit ? 'Update Unit Option' : 'Add Unit Option'}</span>
-                  </button>
-                  {editingUnit && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingUnit(null);
-                        setNewUnit('');
-                      }}
-                      className="w-full h-10 border hover:bg-secondary rounded-md font-medium text-sm"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </div>
-              </form>
-            </div>
+        <div className="space-y-4 max-w-3xl">
+          <div className="bg-blue-50 border border-blue-200 text-blue-800 rounded-lg p-4 text-sm">
+            <span className="font-semibold">Info:</span> Units are dynamically loaded from existing Part Numbers and Toy Names in the database. To add a new unit, type it directly into the "Unit" field when adding/editing a Part Number or Toy Name.
           </div>
-
-          <div className="lg:col-span-2">
-            <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
-              <div className="p-4 border-b bg-secondary/30 flex justify-between items-center">
-                <h4 className="font-semibold text-sm">Measurement Units dropdown list</h4>
-                <span className="text-xs text-muted-foreground">{units.length} options active</span>
-              </div>
-              <div className="divide-y divide-border">
-                {units.map((u, index) => (
-                  <div key={u} className="px-6 py-4 flex items-center justify-between hover:bg-muted/30 transition-colors">
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs text-muted-foreground w-6">{index + 1}</span>
-                      <span className="font-medium bg-secondary px-2 py-1 rounded text-xs text-secondary-foreground">{u}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => {
-                          setEditingUnit(u);
-                          setNewUnit(u);
-                        }}
-                        className="text-muted-foreground hover:text-primary p-1 rounded-md hover:bg-primary/10 transition-colors"
-                        title="Edit unit option"
-                      >
-                        <Pencil size={16} />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteUnit(u)}
-                        className="text-muted-foreground hover:text-destructive p-1 rounded-md hover:bg-destructive/10 transition-colors"
-                        title="Delete unit option"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
+          <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
+            <div className="p-4 border-b bg-secondary/30 flex justify-between items-center">
+              <h4 className="font-semibold text-sm">Measurement Units dropdown list</h4>
+              <span className="text-xs text-muted-foreground">{units.length} options active</span>
+            </div>
+            <div className="divide-y divide-border">
+              {units.map((u, index) => (
+                <div key={u} className="px-6 py-4 flex items-center justify-between hover:bg-muted/30 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground w-6">{index + 1}</span>
+                    <span className="font-medium bg-secondary px-2 py-1 rounded text-xs text-secondary-foreground">{u}</span>
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -899,82 +751,24 @@ export function Items() {
 
       {/* Tab Contents: 3. WIP Locations */}
       {activeTab === 'locations' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-1 space-y-4">
-            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-              <h3 className="font-semibold text-base mb-4">{editingLocation ? 'Edit Location Option' : 'Add Production Location'}</h3>
-              <form onSubmit={handleAddLocation} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">Location Name</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Assembly Line C, Machine 05"
-                    className="w-full h-10 px-3 py-2 border rounded-md bg-background"
-                    value={newLocation}
-                    onChange={e => setNewLocation(e.target.value)}
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <button
-                    type="submit"
-                    className="w-full h-10 bg-primary text-primary-foreground hover:bg-primary/90 px-4 rounded-md font-medium text-sm flex items-center justify-center gap-2"
-                  >
-                    {editingLocation ? <Pencil size={16} /> : <Plus size={16} />}
-                    <span>{editingLocation ? 'Update Location Option' : 'Add Location Option'}</span>
-                  </button>
-                  {editingLocation && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingLocation(null);
-                        setNewLocation('');
-                      }}
-                      className="w-full h-10 border hover:bg-secondary rounded-md font-medium text-sm"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </div>
-              </form>
-            </div>
+        <div className="space-y-4 max-w-3xl">
+          <div className="bg-blue-50 border border-blue-200 text-blue-800 rounded-lg p-4 text-sm">
+            <span className="font-semibold">Info:</span> WIP Locations are dynamically loaded from existing Work In Progress records in the database. To add a new location, type it directly into the "Location / Production Line" field when recording WIP.
           </div>
-
-          <div className="lg:col-span-2">
-            <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
-              <div className="p-4 border-b bg-secondary/30 flex justify-between items-center">
-                <h4 className="font-semibold text-sm">WIP Production Locations dropdown list</h4>
-                <span className="text-xs text-muted-foreground">{allLocations.length} options active</span>
-              </div>
-              <div className="divide-y divide-border">
-                {allLocations.map((loc, index) => (
-                  <div key={loc} className="px-6 py-4 flex items-center justify-between hover:bg-muted/30 transition-colors">
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs text-muted-foreground w-6">{index + 1}</span>
-                      <span className="font-medium">{loc}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => {
-                          setEditingLocation(loc);
-                          setNewLocation(loc);
-                        }}
-                        className="text-muted-foreground hover:text-primary p-1 rounded-md hover:bg-primary/10 transition-colors"
-                        title="Edit location option"
-                      >
-                        <Pencil size={16} />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteLocation(loc)}
-                        className="text-muted-foreground hover:text-destructive p-1 rounded-md hover:bg-destructive/10 transition-colors"
-                        title="Delete location option"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
+          <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
+            <div className="p-4 border-b bg-secondary/30 flex justify-between items-center">
+              <h4 className="font-semibold text-sm">WIP Production Locations dropdown list</h4>
+              <span className="text-xs text-muted-foreground">{allLocations.length} options active</span>
+            </div>
+            <div className="divide-y divide-border">
+              {allLocations.map((loc, index) => (
+                <div key={loc} className="px-6 py-4 flex items-center justify-between hover:bg-muted/30 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground w-6">{index + 1}</span>
+                    <span className="font-medium">{loc}</span>
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>

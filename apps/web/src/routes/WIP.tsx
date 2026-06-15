@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useWIPs, useUpsertWIP, useBulkUpsertWIP, useBulkDeleteWIP } from '../hooks/useWIP';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
@@ -25,27 +25,6 @@ export function WIP() {
   const [importData, setImportData] = useState<any[]>([]);
   const [importSearch, setImportSearch] = useState('');
 
-  const [locations, setLocations] = useState<string[]>([]);
-
-  useEffect(() => {
-    const stored = localStorage.getItem('pdits_locations');
-    const defaultLocations = ['Mesin-01', 'Mesin-02', 'Assembly Line', 'QC Station'];
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setLocations(parsed);
-        } else {
-          setLocations(defaultLocations);
-        }
-      } catch (e) {
-        setLocations(defaultLocations);
-      }
-    } else {
-      setLocations(defaultLocations);
-    }
-  }, []);
-
   const [formData, setFormData] = useState({
     itemId: '',
     location: '',
@@ -65,7 +44,13 @@ export function WIP() {
   const items = itemsData?.data || [];
 
   // Extract unique locations dynamically from current active WIP data
-  const activeLocations = Array.from(new Set(wips.map((wip: any) => wip.location))).filter(Boolean) as string[];
+  const activeLocations = React.useMemo(() => {
+    const activeLocs = Array.from(new Set(wips.map((wip: any) => wip.location))).filter(Boolean) as string[];
+    const defaultLocations = ['Mesin-01', 'Mesin-02', 'Assembly Line', 'QC Station'];
+    return activeLocs.length > 0 ? activeLocs : defaultLocations;
+  }, [wips]);
+
+  const allLocations = activeLocations;
 
   // Filter WIP data based on search, location, and date inputs
   const filteredWips = wips.filter((wip: any) => {
@@ -122,11 +107,16 @@ export function WIP() {
     label: `${item.itemCode} - ${item.itemName}`
   }));
 
-  const allLocations = Array.from(new Set([...locations, ...activeLocations])).filter(Boolean);
-  const locationOptions = allLocations.map(loc => ({
-    value: loc,
-    label: loc
-  }));
+  const locationOptions = React.useMemo(() => {
+    const opts = allLocations.map(loc => ({
+      value: loc,
+      label: loc
+    }));
+    if (formData.location && !allLocations.includes(formData.location)) {
+      opts.push({ value: formData.location, label: formData.location });
+    }
+    return opts;
+  }, [allLocations, formData.location]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -297,9 +287,6 @@ export function WIP() {
                 value={formData.location}
                 onChange={val => setFormData({...formData, location: val})}
                 onAdd={(search) => {
-                  const newLocations = [...locations, search];
-                  setLocations(newLocations);
-                  localStorage.setItem('pdits_locations', JSON.stringify(newLocations));
                   setFormData(prev => ({...prev, location: search}));
                 }}
                 placeholder="Select Location..."
