@@ -43,56 +43,46 @@ function excelSerialToDate(serial: number): string {
 }
 
 /**
- * Parse the FA_Attach sheet from the weekly production schedule Excel.
+ * Parse the DailySchedule.xlsx file with the actual format from the uploaded file.
  * 
- * Layout Structure:
- *   Row 8 (0-indexed): Headers => col B = "Toy Name", col E/H/K/N/Q/T/W = date serial numbers (merged across 3 shift cols)
- *   Row 9: Sub-headers => "Shift 1", "Shift 2", "Shift 3" repeating for each day
- *   Row 10+: Data rows
- *     - Toy Name rows (blue background): col B = long toy name (e.g. "BRB RFRSH GYMNST PS"), col C empty, no quantities
- *     - Data rows: col B = Master Carton code (e.g. "HRG52-9565"), col C = Part Number (e.g. "HRG52-4B12"), quantities in shift columns
- *     - Total rows: col B = "Total"
+ * Layout Structure (based on the actual Excel file):
+ *   Row 1: Contains date headers (14-Jun-26, 15-Jun-26, etc.)
+ *   Row 2: Contains shift sub-headers (Shift 1, Shift 2, Shift 3 under each date)
+ *   Row 3+: Data rows with:
+ *     - Column A: "ND" (ignored as requested)
+ *     - Column B: Toy name OR Master Carton code
+ *     - Column C: Part number (when col B is master carton)
+ *     - Columns D+: Quantity data for each shift/date combination
  * 
  * Detection logic:
- *   - Toy Name: col B has value, col C empty, no quantities → set currentToyName
- *   - Data row: col B = Master Carton, col C = Part Number, has quantities → create records
- * 
- * Example:
- *   Toy Name: "BRB RFRSH GYMNST PS" (col B only)
- *   Master Carton: "HRG52-9445" (col B) | Part Number: "HRG52-4B12" (col C) | Qty: 400 (shift 2, date 17-Apr)
+ *   - If col B contains no hyphen and col C is empty/different → Toy Name
+ *   - If col B contains hyphen → Master Carton, col C is Part Number
  */
 function parseFAAttachSheet(ws: XLSX.WorkSheet): ImportRecord[] {
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
   const results: ImportRecord[] = [];
 
-  // Step 1: Find header row with "Toy Name" in column B
-  let headerRow = -1;
-  for (let r = 0; r <= Math.min(20, range.e.r); r++) {
-    const cellB = ws[XLSX.utils.encode_cell({ r, c: 1 })];
-    console.log(`Checking header row ${r}, col B: "${cellB ? cellB.v : 'empty'}"`);
-    if (cellB && String(cellB.v).trim().toLowerCase() === 'toy name') {
-      headerRow = r;
-      console.log(`✅ Found "Toy Name" header at row ${r}`);
-      break;
-    }
-  }
-  if (headerRow === -1) {
-    console.log('❌ Could not find "Toy Name" header in column B');
-    return results;
-  }
+  console.log(`📊 Parsing Excel file with range: ${ws['!ref']}`);
 
-  // Step 2: Extract shift columns by finding dates and sub-headers
+  // Step 1: Find date headers in the first few rows
+  const dateHeaderRow = 1; // Assuming dates are in row 2 (0-indexed = 1)
+  const shiftHeaderRow = 2; // Assuming shift headers are in row 3 (0-indexed = 2)
+  const dataStartRow = 3; // Data starts from row 4 (0-indexed = 3)
+
+  // Step 2: Extract date and shift columns
   const shiftColumns: { col: number; date: string; shiftNum: number }[] = [];
-  let lastDateStr = '';
   
-  for (let c = 2; c <= range.e.c; c++) {
-    const headerCell = ws[XLSX.utils.encode_cell({ r: headerRow, c })];
-    if (headerCell && headerCell.v != null) {
-      let dateStr = '';
-      if (typeof headerCell.v === 'number' && headerCell.v > 40000) {
-        dateStr = excelSerialToDate(headerCell.v);
-      } else if (typeof headerCell.v === 'string') {
-        const trimmed = headerCell.v.trim();
+  for (let c = 3; c <= range.e.c; c++) { // Start from column D (index 3)
+    // Check for date in the date header row
+    const dateCell = ws[XLSX.utils.encode_cell({ r: dateHeaderRow, c })];
+    let dateStr = '';
+    
+    if (dateCell && dateCell.v != null) {
+      if (typeof dateCell.v === 'number' && dateCell.v > 40000) {
+        dateStr = excelSerialToDate(dateCell.v);
+      } else if (typeof dateCell.v === 'string') {
+        const trimmed = dateCell.v.trim();
+        // Handle various date formats
         if (trimmed.match(/^\d{1,2}-[A-Za-z]{3}-\d{2,4}$/) || trimmed.match(/^\d{1,2}\/\d{1,2}\/\d{2,4}$/)) {
           const d = new Date(trimmed);
           if (!isNaN(d.getTime())) {
@@ -101,83 +91,111 @@ function parseFAAttachSheet(ws: XLSX.WorkSheet): ImportRecord[] {
             const day = String(d.getDate()).padStart(2, '0');
             dateStr = `${year}-${month}-${day}`;
           }
+        } else {
+          // Try to parse other formats like "14-Jun-26"
+          const dateMatch = trimmed.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+          if (dateMatch) {
+            const day = dateMatch[1].padStart(2, '0');
+            const monthName = dateMatch[2].toLowerCase();
+            let year = parseInt(dateMatch[3]);
+            if (year < 100) year += 2000; // Convert 26 to 2026
+            
+            const monthMap: Record<string, string> = {
+              jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+              jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
+            };
+            const month = monthMap[monthName];
+            if (month) {
+              dateStr = `${year}-${month}-${day}`;
+            }
+          }
         }
       }
-      if (dateStr) lastDateStr = dateStr;
     }
-    
-    // Read the sub-header to see if it's a shift column
-    const subCell = ws[XLSX.utils.encode_cell({ r: headerRow + 1, c })];
-    if (subCell && typeof subCell.v === 'string') {
-      const subTrim = subCell.v.trim().toLowerCase();
-      if (subTrim.includes('shift 1')) {
-        if (lastDateStr) shiftColumns.push({ col: c, date: lastDateStr, shiftNum: 1 });
-      } else if (subTrim.includes('shift 2')) {
-        if (lastDateStr) shiftColumns.push({ col: c, date: lastDateStr, shiftNum: 2 });
-      } else if (subTrim.includes('shift 3')) {
-        if (lastDateStr) shiftColumns.push({ col: c, date: lastDateStr, shiftNum: 3 });
+
+    // Check for shift header
+    const shiftCell = ws[XLSX.utils.encode_cell({ r: shiftHeaderRow, c })];
+    if (shiftCell && typeof shiftCell.v === 'string') {
+      const shiftText = shiftCell.v.trim().toLowerCase();
+      let shiftNum = 0;
+      if (shiftText.includes('shift 1') || shiftText === 'shift1') shiftNum = 1;
+      else if (shiftText.includes('shift 2') || shiftText === 'shift2') shiftNum = 2;
+      else if (shiftText.includes('shift 3') || shiftText === 'shift3') shiftNum = 3;
+      
+      if (shiftNum > 0) {
+        // If we have a date for this column, use it; otherwise use the most recent date
+        let finalDate = dateStr;
+        if (!finalDate) {
+          // Look backwards to find the most recent date
+          for (let prevC = c - 1; prevC >= 3; prevC--) {
+            const prevDateCell = ws[XLSX.utils.encode_cell({ r: dateHeaderRow, c: prevC })];
+            if (prevDateCell && prevDateCell.v != null) {
+              if (typeof prevDateCell.v === 'number' && prevDateCell.v > 40000) {
+                finalDate = excelSerialToDate(prevDateCell.v);
+                break;
+              } else if (typeof prevDateCell.v === 'string') {
+                const trimmed = prevDateCell.v.trim();
+                const dateMatch = trimmed.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+                if (dateMatch) {
+                  const day = dateMatch[1].padStart(2, '0');
+                  const monthName = dateMatch[2].toLowerCase();
+                  let year = parseInt(dateMatch[3]);
+                  if (year < 100) year += 2000;
+                  
+                  const monthMap: Record<string, string> = {
+                    jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+                    jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
+                  };
+                  const month = monthMap[monthName];
+                  if (month) {
+                    finalDate = `${year}-${month}-${day}`;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+        
+        if (finalDate) {
+          shiftColumns.push({ col: c, date: finalDate, shiftNum });
+        }
       }
     }
   }
 
-  if (shiftColumns.length === 0) return results;
+  if (shiftColumns.length === 0) {
+    return results;
+  }
 
   // Step 3: Parse data rows
-  const dataStartRow = headerRow + 2; // Skip sub-header row (Shift 1/2/3)
   let currentToyName = '';
   let idCounter = 0;
 
   for (let r = dataStartRow; r <= range.e.r; r++) {
-    const cellA = ws[XLSX.utils.encode_cell({ r, c: 0 })];
-    const cellB = ws[XLSX.utils.encode_cell({ r, c: 1 })];
-    const cellC = ws[XLSX.utils.encode_cell({ r, c: 2 })];
-    const cellD = ws[XLSX.utils.encode_cell({ r, c: 3 })];
+    const cellB = ws[XLSX.utils.encode_cell({ r, c: 1 })]; // Column B
+    const cellC = ws[XLSX.utils.encode_cell({ r, c: 2 })]; // Column C
 
-    const colAVal = cellA && cellA.v != null ? String(cellA.v).trim() : '';
     const colBVal = cellB && cellB.v != null ? String(cellB.v).trim() : '';
     const colCVal = cellC && cellC.v != null ? String(cellC.v).trim() : '';
-    const colDVal = cellD && cellD.v != null ? String(cellD.v).trim() : '';
 
-    // DEBUG: Log each row being processed
-    console.log(`Row ${r}: A="${colAVal}" B="${colBVal}" C="${colCVal}" D="${colDVal}"`);
+    // Skip empty rows
+    if (!colBVal) continue;
 
-    // Skip fully empty rows
-    if (!colAVal && !colBVal && !colCVal) continue;
+    // Skip total rows
+    if (colBVal.toLowerCase().includes('total')) continue;
 
-    // Skip Total rows (col B says "Total" or row combined contains only "total")
-    if (colBVal.toLowerCase() === 'total' || colAVal.toLowerCase() === 'total') continue;
-
-    // ── Row Classification ───────────────────────────────────────────────────
-    //
-    // The Excel layout has two row types under the header:
-    //
-    // 1. TOY NAME ROW (blue background):
-    //    Col A = "ND"  (or empty)
-    //    Col B = Toy name string (no hyphens, e.g. "BRB KITTY CONDO DV")
-    //    Col C = empty (or low values)
-    //    No significant quantities in shift columns
-    //
-    // 2. DATA ROW:
-    //    Col A = "ND"
-    //    Col B = Master Carton code (contains hyphen, e.g. "HHB70-9565")
-    //    Col C = Part Number code   (contains hyphen, e.g. "HHB70-4B12")
-    //    Quantities in shift columns
-    //
-    // Detection priority:
-    //   • If col A = "ND" and col B contains a hyphen → data row (master carton in B, part in C)
-    //   • If col A = "ND" and col B has text but no hyphen → toy name row
-    // ─────────────────────────────────────────────────────────────────────────
-
-    const colBHasHyphen = colBVal.includes('-');
-    const colCHasHyphen = colCVal.includes('-');
-
-    // Collect raw shift quantities for this row
-    const rowQtys: { shiftCol: number; rawQty: number }[] = [];
+    // Collect quantities for this row
+    const rowQtys: { shiftCol: number; rawQty: number; rawText: string }[] = [];
     let totalRawQty = 0;
+    
     for (const sc of shiftColumns) {
       let qty = 0;
+      let rawText = '';
       const qtyCell = ws[XLSX.utils.encode_cell({ r, c: sc.col })];
       if (qtyCell && qtyCell.v != null) {
+        // Capture the formatted text before numeric parsing
+        rawText = qtyCell.w || String(qtyCell.v);
         if (typeof qtyCell.v === 'number') {
           qty = qtyCell.v;
         } else if (typeof qtyCell.v === 'string') {
@@ -186,61 +204,38 @@ function parseFAAttachSheet(ws: XLSX.WorkSheet): ImportRecord[] {
           if (!isNaN(parsed)) qty = parsed;
         }
       }
-      rowQtys.push({ shiftCol: sc.col, rawQty: qty });
+      rowQtys.push({ shiftCol: sc.col, rawQty: qty, rawText });
       totalRawQty += qty;
     }
 
-    // ── Toy Name Row ─────────────────────────────────────────────────────────
-    // MUST have "ND" in col A and non-hyphenated text in col B with no quantities
-    if (colAVal === 'ND' && colBVal && !colBHasHyphen && totalRawQty === 0) {
-      console.log(`🎯 TOY NAME ROW: Setting currentToyName = "${colBVal}"`);
+    // Determine if this is a toy name row or data row
+    const colBHasHyphen = colBVal.includes('-');
+    
+    if (!colBHasHyphen && totalRawQty === 0) {
+      // This is a toy name row
       currentToyName = colBVal;
-      continue;
-    }
+    } else if (colBHasHyphen) {
+      // This is a data row - col B is master carton, col C is part number
+      const masterCarton = colBVal;
+      const partNumber = colCVal || masterCarton; // Fallback to master carton if no part number
 
-    // ── Data Row ─────────────────────────────────────────────────────────────
-    // MUST have "ND" in col A and hyphenated master carton in col B
-    if (colAVal === 'ND' && colBHasHyphen) {
-      let masterCarton = colBVal;
-      let partNumber = '';
-
-      // Part number is in col C if it has a hyphen; otherwise col D
-      if (colCHasHyphen) {
-        partNumber = colCVal;
-      } else if (colDVal.includes('-')) {
-        partNumber = colDVal;
-      } else if (colCVal) {
-        // col C has something but no hyphen — still treat as part number
-        partNumber = colCVal;
-      } else {
-        // Fallback: part number same as master carton
-        partNumber = masterCarton;
-      }
-
-      // Handle merged cell with newline (e.g. "HHB70-9565\nHHB70-4B12")
-      if (masterCarton.includes('\n')) {
-        const parts = masterCarton.split('\n');
-        masterCarton = parts[0].trim();
-        if (!partNumber) partNumber = parts[1].trim();
-      }
-
-      console.log(`📦 DATA ROW: toyName="${currentToyName}" masterCarton="${masterCarton}" partNumber="${partNumber}" totalQty=${totalRawQty}`);
-
+      // Create records for each shift with quantity > 0
       for (const rq of rowQtys) {
         if (rq.rawQty > 0) {
           const sc = shiftColumns.find(s => s.col === rq.shiftCol)!;
           idCounter++;
 
-          // Excel may store 1920 as 1.920 when locale uses dot as thousands sep
           let finalQty = rq.rawQty;
-          if (finalQty > 0 && finalQty < 100) {
+          
+          // Excel stores quantities with dot as thousands separator (e.g. 3.000 = 3000, 1.288 = 1288)
+          // When JS parses "3.000" it becomes the number 3, and "1.288" becomes 1.288
+          // Detect this by checking if the raw cell text matches pattern X.XXX (dot + exactly 3 digits)
+          if (/^\d+\.\d{3}$/.test(rq.rawText.trim())) {
             finalQty = Math.round(finalQty * 1000);
           } else {
             finalQty = Math.round(finalQty);
           }
-
-          console.log(`  → Record: date=${sc.date} shift=${sc.shiftNum} qty=${finalQty}`);
-
+          
           results.push({
             id: `import-${idCounter}`,
             toyName: currentToyName,
@@ -253,8 +248,6 @@ function parseFAAttachSheet(ws: XLSX.WorkSheet): ImportRecord[] {
         }
       }
     }
-    // Rows that reach here without a hyphen in col B and have quantities
-    // are edge cases (e.g. pure numeric codes). Skip them to avoid noise.
   }
 
   return results;
