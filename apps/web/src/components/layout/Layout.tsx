@@ -1,5 +1,5 @@
 import { Outlet, Link, useRouterState, useRouter } from '@tanstack/react-router';
-import { LayoutDashboard, Activity, Users, Bell, LogOut, Settings, CalendarClock, Box, Settings2, CalendarRange } from 'lucide-react';
+import { LayoutDashboard, Activity, Users, Bell, LogOut, Settings, CalendarClock, Box, Settings2, CalendarRange, ShieldAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useAuthStore } from '../../stores/authStore';
 
@@ -17,13 +17,18 @@ export function Layout() {
   const navItems = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard },
     { name: 'Item Tracking', path: '/tracking', icon: Activity },
+    { name: 'Shortage Detail', path: '/shortage-detail', icon: ShieldAlert },
     { name: 'Daily Schedule', path: '/schedule', icon: CalendarClock },
     { name: '26-Week Demand Plan', path: '/weekly-demand', icon: CalendarRange },
     { name: 'Finish Good (FG)', path: '/fg-stock', icon: Box },
     { name: 'Work in Progress', path: '/wip', icon: Settings2 },
-    { name: 'Dropdown Management', path: '/items', icon: Settings2 },
-    { name: 'User Management', path: '/users', icon: Users },
-  ];
+    { name: 'Dropdown Management', path: '/items', icon: Settings2, adminOnly: true },
+    { name: 'User Management', path: '/users', icon: Users, superAdminOnly: true },
+  ].filter(item => {
+    if (item.superAdminOnly) return user?.role === 'SUPER_ADMIN';
+    if (item.adminOnly) return user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
+    return true;
+  });
 
   return (
     <div className="min-h-screen bg-secondary/30 flex flex-col md:flex-row">

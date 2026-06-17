@@ -136,7 +136,6 @@ async function main() {
           progressPercent: Math.floor(Math.random() * 80) + 10,
           date: today,
           shift: 1,
-          estimatedFinish: new Date(today.getTime() + 24 * 60 * 60 * 1000),
           status: 'IN_PROGRESS',
           updatedBy: admin.id,
         },

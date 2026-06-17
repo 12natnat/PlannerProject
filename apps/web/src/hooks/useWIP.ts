@@ -8,7 +8,6 @@ export interface WIP {
   progressPercent: number;
   date: string;
   shift: number;
-  estimatedFinish: string;
   status: string;
   notes: string | null;
   updatedAt: string;
@@ -40,7 +39,6 @@ export function useUpsertWIP() {
       progressPercent: number;
       date: string;
       shift: number;
-      estimatedFinish: string;
       status?: string;
       notes?: string;
       saveMode?: 'overwrite' | 'add';
@@ -81,7 +79,6 @@ export function useUpdateWIP() {
       progressPercent: number;
       date: string;
       shift: number;
-      estimatedFinish: string;
       status?: string;
       notes?: string;
     }) => 
@@ -103,6 +100,22 @@ export function useBulkUpsertWIP() {
     mutationFn: (data: { records: any[]; saveMode?: 'overwrite' | 'add' }) => 
       fetchApi('/wip/bulk', {
         method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['wips'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
+export function useBulkDeleteWIP() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (data: { ids: string[] }) => 
+      fetchApi('/wip/bulk', {
+        method: 'DELETE',
         body: JSON.stringify(data),
       }),
     onSuccess: () => {

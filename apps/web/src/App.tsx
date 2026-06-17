@@ -66,6 +66,7 @@ import { DailySchedule } from './routes/DailySchedule';
 import { FGStock } from './routes/FGStock';
 import { WIP } from './routes/WIP';
 import { WeeklyDemand } from './routes/WeeklyDemand';
+import { ShortageDetail } from './routes/ShortageDetail';
 
 const itemsRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
@@ -103,9 +104,25 @@ const weeklyDemandRoute = createRoute({
   component: WeeklyDemand,
 });
 
+const shortageDetailRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/shortage-detail',
+  component: ShortageDetail,
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
-  authLayoutRoute.addChildren([indexRoute, trackingRoute, itemsRoute, dailyScheduleRoute, fgStockRoute, wipRoute, usersRoute, weeklyDemandRoute]),
+  authLayoutRoute.addChildren([
+    indexRoute,
+    trackingRoute,
+    itemsRoute,
+    dailyScheduleRoute,
+    fgStockRoute,
+    wipRoute,
+    usersRoute,
+    weeklyDemandRoute,
+    shortageDetailRoute,
+  ]),
 ]);
 
 const router = createRouter({ routeTree });

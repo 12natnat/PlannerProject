@@ -27,17 +27,7 @@ export function Dashboard() {
     });
   }, [data?.gapAnalysis, searchQuery, showUrgentOnly]);
 
-  const filteredWipStatus = useMemo(() => {
-    if (!data?.wipStatus) return [];
-    
-    return data.wipStatus.filter((wip) => {
-      // Search filter for WIP
-      return (
-        wip.itemCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        wip.itemName.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-    });
-  }, [data?.wipStatus, searchQuery]);
+
 
   // Recalculate summary metrics based on filtered set
   const summaryMetrics = useMemo(() => {
@@ -162,124 +152,109 @@ export function Dashboard() {
       </div>
 
       {/* Main Charts / Layout */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <div className="xl:col-span-2 bg-card text-card-foreground shadow-sm border rounded-lg p-6">
-          <h3 className="text-lg font-semibold mb-6">Demand vs Supply Gap Analysis</h3>
-          <div className="h-[350px] w-full">
-            {chartData.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
-                No data matching active filters.
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                  <XAxis dataKey="name" />
-                  <YAxis />
-                  <RechartsTooltip 
-                    contentStyle={{ 
-                      backgroundColor: 'hsl(var(--card))', 
-                      borderColor: 'hsl(var(--border))',
-                      borderRadius: '6px'
-                    }}
-                    labelStyle={{
-                      color: 'hsl(var(--foreground))',
-                      fontWeight: 'bold'
-                    }}
-                    itemStyle={{
-                      color: 'hsl(var(--foreground))'
-                    }}
-                  />
-                  <Legend />
-                  <Bar dataKey="demand" name="Daily Demand" fill="#2563eb" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="fgStock" name="FG Stock" fill="#16a34a" stackId="a" radius={[0, 0, 4, 4]} />
-                  <Bar dataKey="wip" name="WIP" fill="#f59e0b" stackId="a" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </div>
-
-        {/* Critical Shortages Sidebar List */}
-        <div className="bg-card text-card-foreground shadow-sm border rounded-lg p-6 overflow-hidden flex flex-col">
-          <h3 className="text-lg font-semibold mb-4 text-destructive flex items-center gap-2">
-            <AlertCircle size={18} /> Critical Shortages
-          </h3>
-          <div className="flex-1 overflow-auto">
-            {filteredGapAnalysis.filter(i => i.status === 'SHORTAGE').length === 0 ? (
-              <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
-                No shortages found for current filters.
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {filteredGapAnalysis
-                  .filter(i => i.status === 'SHORTAGE')
-                  .sort((a, b) => b.gap - a.gap) // Sort by largest shortage
-                  .map((item) => (
-                    <div key={item.itemCode} className="border-b pb-3 last:border-0">
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="font-semibold text-sm max-w-[170px] truncate" title={item.itemName}>{item.itemName}</span>
-                        <span className="text-destructive font-bold text-sm bg-destructive/10 px-2 py-0.5 rounded">{item.gap.toLocaleString()} pcs</span>
-                      </div>
-                      <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>{item.itemCode}</span>
-                        <span>Demand: {item.demand.toLocaleString()} | Supply: {(item.fgStock + item.wip).toLocaleString()}</span>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            )}
-          </div>
+      <div className="bg-card text-card-foreground shadow-sm border rounded-lg p-6">
+        <h3 className="text-lg font-semibold mb-6">Demand vs Supply Gap Analysis</h3>
+        <div className="h-[350px] w-full">
+          {chartData.length === 0 ? (
+            <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
+              No data matching active filters.
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                <XAxis dataKey="name" />
+                <YAxis />
+                <RechartsTooltip 
+                  contentStyle={{ 
+                    backgroundColor: 'hsl(var(--card))', 
+                    borderColor: 'hsl(var(--border))',
+                    borderRadius: '6px'
+                  }}
+                  labelStyle={{
+                    color: 'hsl(var(--foreground))',
+                    fontWeight: 'bold'
+                  }}
+                  itemStyle={{
+                    color: 'hsl(var(--foreground))'
+                  }}
+                />
+                <Legend />
+                <Bar dataKey="demand" name="Daily Demand" fill="#2563eb" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="fgStock" name="FG Stock" fill="#16a34a" stackId="a" radius={[0, 0, 4, 4]} />
+                <Bar dataKey="wip" name="WIP" fill="#f59e0b" stackId="a" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </div>
-      
-      {/* WIP Status Table */}
-      <div className="bg-card text-card-foreground shadow-sm border rounded-lg overflow-hidden">
-        <div className="p-6 border-b">
-          <h3 className="text-lg font-semibold">Active Work In Progress (WIP)</h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="text-xs text-muted-foreground uppercase bg-secondary/50">
-              <tr>
-                <th className="px-6 py-3 font-medium">Item Code</th>
-                <th className="px-6 py-3 font-medium">Item Name</th>
-                <th className="px-6 py-3 font-medium">Location</th>
-                <th className="px-6 py-3 font-medium">Quantity</th>
-                <th className="px-6 py-3 font-medium">Progress</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredWipStatus.length === 0 ? (
+
+      {/* Detail Shortage List (Only visible when Show Urgent is active) */}
+      {showUrgentOnly && (
+        <div className="bg-card text-card-foreground shadow-sm border rounded-lg overflow-hidden animate-in fade-in duration-200">
+          <div className="p-6 border-b flex justify-between items-center bg-muted/10">
+            <h3 className="text-lg font-semibold flex items-center gap-2">
+              <AlertCircle size={18} className="text-destructive animate-pulse" />
+              Urgent Shortage Details
+            </h3>
+            <span className="text-xs text-muted-foreground font-medium bg-destructive/10 text-destructive px-2.5 py-1 rounded-full border border-destructive/20">
+              {filteredGapAnalysis.length} items with shortage
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-xs text-muted-foreground uppercase bg-secondary/50">
                 <tr>
-                  <td colSpan={5} className="px-6 py-8 text-center text-muted-foreground">
-                    No active WIP records found matching active filters
-                  </td>
+                  <th className="px-6 py-3 font-semibold">Toy Name</th>
+                  <th className="px-6 py-3 font-semibold">Master Carton</th>
+                  <th className="px-6 py-3 font-semibold">Part Number</th>
+                  <th className="px-6 py-3 font-semibold">Description</th>
+                  <th className="px-6 py-3 font-semibold text-right">Daily Demand</th>
+                  <th className="px-6 py-3 font-semibold text-right">FG Stock</th>
+                  <th className="px-6 py-3 font-semibold text-right">WIP</th>
+                  <th className="px-6 py-3 font-semibold text-right">Total Supply</th>
+                  <th className="px-6 py-3 font-semibold text-right text-rose-600 dark:text-rose-400">Immediate Shortage</th>
+                  <th className="px-6 py-3 font-semibold text-right text-destructive">Projected Shortage</th>
                 </tr>
-              ) : (
-                filteredWipStatus.map((wip, idx) => (
-                  <tr key={`${wip.itemCode}-${idx}`} className="border-b last:border-0 hover:bg-muted/50 transition-colors">
-                    <td className="px-6 py-4 font-medium">{wip.itemCode}</td>
-                    <td className="px-6 py-4">{wip.itemName}</td>
-                    <td className="px-6 py-4">
-                      <span className="bg-secondary px-2 py-1 rounded text-xs font-medium">{wip.location}</span>
-                    </td>
-                    <td className="px-6 py-4 font-semibold">{wip.qty.toLocaleString()}</td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <div className="w-full bg-secondary rounded-full h-2.5 max-w-[100px]">
-                          <div className="bg-primary h-2.5 rounded-full" style={{ width: `${wip.progress}%` }}></div>
-                        </div>
-                        <span className="text-xs">{wip.progress}%</span>
-                      </div>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {filteredGapAnalysis.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="px-6 py-8 text-center text-muted-foreground">
+                      No shortage details found.
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  filteredGapAnalysis.map((item, idx) => {
+                    const immediateShortage = item.demand > item.fgStock ? item.demand - item.fgStock : 0;
+                    const projectedShortage = Math.abs(item.gap);
+                    
+                    return (
+                      <tr key={`${item.itemCode}-${idx}`} className="hover:bg-muted/50 transition-colors">
+                        <td className="px-6 py-4 max-w-[180px] truncate" title={item.toyName}>{item.toyName}</td>
+                        <td className="px-6 py-4 font-medium">{item.masterCarton}</td>
+                        <td className="px-6 py-4 font-semibold text-foreground">{item.itemCode}</td>
+                        <td className="px-6 py-4 max-w-[240px] truncate" title={item.itemName}>{item.itemName}</td>
+                        <td className="px-6 py-4 text-right font-medium">{item.demand.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-right font-medium text-green-600 dark:text-green-500">{item.fgStock.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-right font-medium text-amber-500">{item.wip.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-right font-medium text-blue-600 dark:text-blue-500">{(item.fgStock + item.wip).toLocaleString()}</td>
+                        <td className="px-6 py-4 text-right font-bold text-rose-600 dark:text-rose-400 bg-rose-500/5">
+                          {immediateShortage.toLocaleString()}
+                        </td>
+                        <td className="px-6 py-4 text-right font-bold text-destructive bg-destructive/5">
+                          {projectedShortage.toLocaleString()}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

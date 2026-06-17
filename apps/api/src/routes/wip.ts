@@ -16,9 +16,9 @@ export default async function wipRoutes(server: FastifyInstance) {
     '/api/v1/wip',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { itemId, location, quantity, progressPercent, date, shift, estimatedFinish, status, notes, saveMode } = request.body as any;
+      const { itemId, location, quantity, progressPercent, date, shift, status, notes, saveMode } = request.body as any;
 
-      if (!itemId || !location || quantity === undefined || !date || !shift || !estimatedFinish) {
+      if (!itemId || !location || quantity === undefined || !date || !shift) {
         return reply.code(400).send({ error: 'Bad Request', message: 'Missing required fields' });
       }
 
@@ -33,7 +33,6 @@ export default async function wipRoutes(server: FastifyInstance) {
           progressPercent: parseInt(progressPercent || 0),
           date: new Date(date),
           shift: parseInt(shift),
-          estimatedFinish: new Date(estimatedFinish),
           status: status || 'IN_PROGRESS',
           notes,
           updatedBy: request.user!.id,
@@ -45,7 +44,6 @@ export default async function wipRoutes(server: FastifyInstance) {
           progressPercent: parseInt(progressPercent || 0),
           date: new Date(date),
           shift: parseInt(shift),
-          estimatedFinish: new Date(estimatedFinish),
           status: status || 'IN_PROGRESS',
           notes,
           updatedBy: request.user!.id,
@@ -78,6 +76,46 @@ export default async function wipRoutes(server: FastifyInstance) {
         return reply.code(400).send({ error: 'Bad Request', message: 'No records provided' });
       }
 
+      if (saveMode === 'overwrite') {
+        const uniqueCodes = [...new Set(records.map((r: any) => r.itemCode as string).filter(Boolean))];
+        const existingItems = await prisma.item.findMany({ where: { itemCode: { in: uniqueCodes } } });
+        const itemCodeToId: Record<string, string> = {};
+        for (const item of existingItems) itemCodeToId[item.itemCode] = item.id;
+
+        const scopeMap = new Map<string, { date: Date; itemsToKeep: { itemId: string, location: string }[] }>();
+        for (const r of records) {
+          if (!r.itemCode || !r.location || r.quantity === undefined || !r.date) continue;
+          const date = new Date(r.date);
+          const key = date.getTime().toString();
+          
+          if (!scopeMap.has(key)) {
+            scopeMap.set(key, { date, itemsToKeep: [] });
+          }
+          if (itemCodeToId[r.itemCode]) {
+            scopeMap.get(key)!.itemsToKeep.push({ itemId: itemCodeToId[r.itemCode], location: r.location });
+          }
+        }
+
+        for (const scope of scopeMap.values()) {
+          const keepSet = new Set(scope.itemsToKeep.map(i => `${i.itemId}_${i.location}`));
+          
+          const wips = await prisma.wIP.findMany({
+            where: { date: scope.date },
+            select: { id: true, itemId: true, location: true }
+          });
+          
+          const idsToDelete = wips
+            .filter(w => !keepSet.has(`${w.itemId}_${w.location}`))
+            .map(w => w.id);
+            
+          if (idsToDelete.length > 0) {
+            await prisma.wIP.deleteMany({
+              where: { id: { in: idsToDelete } }
+            });
+          }
+        }
+      }
+
       const results = [];
       for (const record of records) {
         const { itemCode, location, quantity, date } = record;
@@ -108,7 +146,6 @@ export default async function wipRoutes(server: FastifyInstance) {
             progressPercent: 0,
             date: new Date(date),
             shift: 1,
-            estimatedFinish: new Date(new Date(date).getTime() + 86400000), // +1 day
             status: 'IN_PROGRESS',
             updatedBy: request.user!.id,
           },
@@ -136,7 +173,7 @@ export default async function wipRoutes(server: FastifyInstance) {
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const { quantity, progressPercent, date, shift, estimatedFinish, status, notes } = request.body as any;
+      const { quantity, progressPercent, date, shift, status, notes } = request.body as any;
 
       const existingWip = await prisma.wIP.findUnique({ where: { id } });
       if (!existingWip) {
@@ -150,7 +187,6 @@ export default async function wipRoutes(server: FastifyInstance) {
           progressPercent: parseInt(progressPercent || 0),
           date: new Date(date),
           shift: parseInt(shift),
-          estimatedFinish: new Date(estimatedFinish),
           status: status || 'IN_PROGRESS',
           notes,
           updatedBy: request.user!.id,
@@ -170,6 +206,34 @@ export default async function wipRoutes(server: FastifyInstance) {
       });
 
       return reply.send({ data: updatedWip });
+    }
+  );
+
+  // Bulk Delete WIP
+  server.delete(
+    '/api/v1/wip/bulk',
+    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    async (request, reply) => {
+      const { ids } = request.body as { ids: string[] };
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return reply.code(400).send({ error: 'Bad Request', message: 'No ids provided' });
+      }
+
+      await prisma.wIP.deleteMany({
+        where: { id: { in: ids } },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: request.user!.id,
+          action: 'DELETE',
+          entityType: 'WIP',
+          entityId: 'bulk',
+          notes: `Bulk deleted ${ids.length} records`,
+        },
+      });
+
+      return reply.send({ success: true, count: ids.length });
     }
   );
 

@@ -11,6 +11,8 @@ export interface DashboardSummary {
 export interface GapAnalysis {
   itemCode: string;
   itemName: string;
+  toyName?: string;
+  masterCarton?: string;
   demand: number;
   fgStock: number;
   wip: number;

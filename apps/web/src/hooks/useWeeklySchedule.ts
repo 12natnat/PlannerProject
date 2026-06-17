@@ -105,3 +105,19 @@ export function useUpsertWeeklySchedule() {
     },
   });
 }
+
+export function useBulkDeleteWeeklySchedule() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (data: { ids: string[] }) =>
+      fetchApi('/weekly-schedule/bulk', {
+        method: 'DELETE',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['weeklySchedule'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}

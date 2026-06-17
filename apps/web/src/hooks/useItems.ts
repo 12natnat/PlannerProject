@@ -16,6 +16,28 @@ export function useItems() {
   });
 }
 
+export function useMasterCartons() {
+  return useQuery<{ data: any[] }, Error>({
+    queryKey: ['masterCartons'],
+    queryFn: () => fetchApi('/master-cartons'),
+  });
+}
+
+export function useCreateMasterCarton() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (newMc: { cartonCode: string; toyNameItemId: string; partNumberCode: string }) => 
+      fetchApi('/master-cartons', {
+        method: 'POST',
+        body: JSON.stringify(newMc),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['masterCartons'] });
+    },
+  });
+}
+
 export function useCreateItem() {
   const queryClient = useQueryClient();
   
@@ -56,6 +78,35 @@ export function useUpdateItem() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['items'] });
+    },
+  });
+}
+
+export function useUpdateMasterCarton() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, cartonCode, toyNameItemId, partNumberCode }: { id: string; cartonCode: string; toyNameItemId: string; partNumberCode: string }) => 
+      fetchApi(`/master-cartons/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ cartonCode, toyNameItemId, partNumberCode }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['masterCartons'] });
+    },
+  });
+}
+
+export function useDeleteMasterCarton() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchApi(`/master-cartons/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['masterCartons'] });
     },
   });
 }

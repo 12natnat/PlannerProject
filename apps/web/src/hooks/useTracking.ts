@@ -8,7 +8,6 @@ export interface WipDetail {
   progress_pct: number;
   shift: number;
   date: string;
-  estimated_finish: string;
   status: string;
 }
 

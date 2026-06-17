@@ -87,3 +87,19 @@ export function useBulkUpsertFGStock() {
     },
   });
 }
+
+export function useBulkDeleteFGStock() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (data: { ids: string[] }) => 
+      fetchApi('/fg-stock/bulk', {
+        method: 'DELETE',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['fgStocks'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}

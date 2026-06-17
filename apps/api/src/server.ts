@@ -13,6 +13,7 @@ import wipRoutes from './routes/wip';
 import trackingRoutes from './routes/tracking';
 import usersRoutes from './routes/users';
 import weeklyScheduleRoutes from './routes/weeklySchedule';
+import { startCleanupSchedule, stopCleanupSchedule } from './lib/cleanup';
 
 const server = Fastify({
   bodyLimit: 52428800, // 50MB
@@ -140,6 +141,9 @@ async function start() {
       host: '0.0.0.0',
     });
 
+    // Start daily cleanup of old schedule records (>14 days)
+    startCleanupSchedule();
+
     console.log(`
     🚀 PDITS API Server is running!
     
@@ -160,6 +164,7 @@ signals.forEach((signal) => {
   process.on(signal, async () => {
     console.log(`\n${signal} received, shutting down gracefully...`);
     
+    stopCleanupSchedule();
     await server.close();
     await prisma.$disconnect();
     await redis.quit();
