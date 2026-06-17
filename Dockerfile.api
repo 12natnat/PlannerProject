@@ -1,0 +1,31 @@
+FROM node:20-alpine AS base
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable
+
+WORKDIR /app
+
+FROM base AS builder
+COPY . .
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
+
+# Generate Prisma Client
+RUN pnpm --filter @pdits/api prisma:generate
+
+# Build shared packages and api
+RUN pnpm --filter @pdits/shared build
+RUN pnpm --filter @pdits/api build
+
+# Prune dependencies for production
+RUN pnpm deploy --filter=@pdits/api /prod/api
+
+FROM base AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /prod/api /app
+
+# Copy prisma schema/migrations for deployment steps
+COPY --from=builder /app/apps/api/prisma /app/prisma
+
+EXPOSE 3001
+CMD ["pnpm", "start"]
