@@ -13,6 +13,8 @@ import wipRoutes from './routes/wip';
 import trackingRoutes from './routes/tracking';
 import usersRoutes from './routes/users';
 import weeklyScheduleRoutes from './routes/weeklySchedule';
+import historyRoutes from './routes/history';
+import fgStockHistoryRoutes from './routes/fgStockHistory';
 import { startCleanupSchedule, stopCleanupSchedule } from './lib/cleanup';
 
 const server = Fastify({
@@ -67,6 +69,8 @@ async function registerPlugins() {
   await server.register(trackingRoutes);
   await server.register(usersRoutes);
   await server.register(weeklyScheduleRoutes);
+  await server.register(historyRoutes);
+  await server.register(fgStockHistoryRoutes);
 }
 
 // Health check route
@@ -142,7 +146,7 @@ async function start() {
     });
 
     // Start daily cleanup of old schedule records (>14 days)
-    startCleanupSchedule();
+    // startCleanupSchedule(); // Disabled to keep data history
 
     console.log(`
     🚀 PDITS API Server is running!

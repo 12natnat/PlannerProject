@@ -22,17 +22,39 @@ export default async function wipRoutes(server: FastifyInstance) {
         return reply.code(400).send({ error: 'Bad Request', message: 'Missing required fields' });
       }
 
+      const inputDate = new Date(date);
+      inputDate.setUTCHours(0, 0, 0, 0);
+      const inputShift = parseInt(shift);
+
       const existingWip = await prisma.wIP.findUnique({
-        where: { itemId_location: { itemId, location } },
+        where: { itemId_location_date_shift: { itemId, location, date: inputDate, shift: inputShift } },
       });
 
+      let previousQuantity = 0;
+      if (existingWip) {
+        previousQuantity = existingWip.quantity;
+      } else {
+        const lastKnown = await prisma.wIP.findFirst({
+          where: { 
+            itemId, 
+            location, 
+            OR: [
+              { date: { lt: inputDate } },
+              { date: inputDate, shift: { lt: inputShift } }
+            ]
+          },
+          orderBy: [{ date: 'desc' }, { shift: 'desc' }]
+        });
+        if (lastKnown) previousQuantity = lastKnown.quantity;
+      }
+
+      const newQuantity = saveMode === 'add' ? previousQuantity + parseFloat(quantity) : parseFloat(quantity);
+
       const updatedWip = await prisma.wIP.upsert({
-        where: { itemId_location: { itemId, location } },
+        where: { itemId_location_date_shift: { itemId, location, date: inputDate, shift: inputShift } },
         update: {
-          quantity: saveMode === 'add' ? (existingWip?.quantity || 0) + parseFloat(quantity) : parseFloat(quantity),
+          quantity: newQuantity,
           progressPercent: parseInt(progressPercent || 0),
-          date: new Date(date),
-          shift: parseInt(shift),
           status: status || 'IN_PROGRESS',
           notes,
           updatedBy: request.user!.id,
@@ -40,10 +62,10 @@ export default async function wipRoutes(server: FastifyInstance) {
         create: {
           itemId,
           location,
-          quantity: parseFloat(quantity),
+          quantity: newQuantity,
           progressPercent: parseInt(progressPercent || 0),
-          date: new Date(date),
-          shift: parseInt(shift),
+          date: inputDate,
+          shift: inputShift,
           status: status || 'IN_PROGRESS',
           notes,
           updatedBy: request.user!.id,
@@ -77,22 +99,22 @@ export default async function wipRoutes(server: FastifyInstance) {
       }
 
       if (saveMode === 'overwrite') {
-        const uniqueCodes = [...new Set(records.map((r: any) => r.itemCode as string).filter(Boolean))];
-        const existingItems = await prisma.item.findMany({ where: { itemCode: { in: uniqueCodes } } });
+        const uniqueCodes = [...new Set(records.map((r: any) => r.partNumber as string).filter(Boolean))];
+        const existingItems = await prisma.item.findMany({ where: { partNumber: { in: uniqueCodes } } });
         const itemCodeToId: Record<string, string> = {};
-        for (const item of existingItems) itemCodeToId[item.itemCode] = item.id;
+        for (const item of existingItems) itemCodeToId[item.partNumber] = item.id;
 
         const scopeMap = new Map<string, { date: Date; itemsToKeep: { itemId: string, location: string }[] }>();
         for (const r of records) {
-          if (!r.itemCode || !r.location || r.quantity === undefined || !r.date) continue;
+          if (!r.partNumber || !r.location || r.quantity === undefined || !r.date) continue;
           const date = new Date(r.date);
           const key = date.getTime().toString();
           
           if (!scopeMap.has(key)) {
             scopeMap.set(key, { date, itemsToKeep: [] });
           }
-          if (itemCodeToId[r.itemCode]) {
-            scopeMap.get(key)!.itemsToKeep.push({ itemId: itemCodeToId[r.itemCode], location: r.location });
+          if (itemCodeToId[r.partNumber]) {
+            scopeMap.get(key)!.itemsToKeep.push({ itemId: itemCodeToId[r.partNumber], location: r.location });
           }
         }
 
@@ -118,35 +140,56 @@ export default async function wipRoutes(server: FastifyInstance) {
 
       const results = [];
       for (const record of records) {
-        const { itemCode, location, quantity, date } = record;
-        if (!itemCode || !location || quantity === undefined || !date) continue;
+        const { partNumber, location, quantity, date } = record;
+        if (!partNumber || !location || quantity === undefined || !date) continue;
 
-        let item = await prisma.item.findUnique({ where: { itemCode } });
+        let item = await prisma.item.findUnique({ where: { partNumber } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: itemCode, unit: 'pcs' },
+            data: { partNumber, description: partNumber, unit: 'pcs' },
           });
         }
 
+        const inputDate = new Date(date);
+        inputDate.setUTCHours(0, 0, 0, 0);
+        const inputShift = parseInt(record.shift || '1');
+
         const existingWip = await prisma.wIP.findUnique({
-          where: { itemId_location: { itemId: item.id, location } },
+          where: { itemId_location_date_shift: { itemId: item.id, location, date: inputDate, shift: inputShift } },
         });
 
+        let previousQuantity = 0;
+        if (existingWip) {
+          previousQuantity = existingWip.quantity;
+        } else {
+          const lastKnown = await prisma.wIP.findFirst({
+            where: { 
+              itemId: item.id, 
+              location, 
+              OR: [
+                { date: { lt: inputDate } },
+                { date: inputDate, shift: { lt: inputShift } }
+              ]
+            },
+            orderBy: [{ date: 'desc' }, { shift: 'desc' }]
+          });
+          if (lastKnown) previousQuantity = lastKnown.quantity;
+        }
+
+        const newQuantity = saveMode === 'add' ? previousQuantity + parseFloat(quantity) : parseFloat(quantity);
+
         const updatedWip = await prisma.wIP.upsert({
-          where: { itemId_location: { itemId: item.id, location } },
+          where: { itemId_location_date_shift: { itemId: item.id, location, date: inputDate, shift: inputShift } },
           update: {
-            quantity: saveMode === 'add' ? (existingWip?.quantity || 0) + parseFloat(quantity) : parseFloat(quantity),
-            date: new Date(date),
+            quantity: newQuantity,
             updatedBy: request.user!.id,
           },
           create: {
             itemId: item.id,
             location,
-            quantity: parseFloat(quantity),
-            progressPercent: 0,
-            date: new Date(date),
-            shift: 1,
-            status: 'IN_PROGRESS',
+            quantity: newQuantity,
+            date: inputDate,
+            shift: inputShift,
             updatedBy: request.user!.id,
           },
         });

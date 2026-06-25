@@ -6,13 +6,13 @@ import { calculateItemStatus } from '@pdits/shared/src/utils/calculateStatus';
 export default async function trackingRoutes(server: FastifyInstance) {
   // GET /api/v1/tracking/daily
   server.get('/api/v1/tracking/daily', { preValidation: [authenticate] }, async (request, reply) => {
-    const { item_code, date, shift } = request.query as { item_code?: string; date?: string; shift?: string };
+    const { part_number, date, shift } = request.query as { part_number?: string; date?: string; shift?: string };
 
-    if (!item_code || !date) {
-      return reply.code(400).send({ error: 'Bad Request', message: 'item_code and date are required' });
+    if (!part_number || !date) {
+      return reply.code(400).send({ error: 'Bad Request', message: 'part_number and date are required' });
     }
 
-    const item = await prisma.item.findUnique({ where: { itemCode: item_code } });
+    const item = await prisma.item.findUnique({ where: { partNumber: part_number } });
     if (!item) {
       return reply.code(404).send({ error: 'Not Found', message: 'Item not found' });
     }
@@ -31,18 +31,29 @@ export default async function trackingRoutes(server: FastifyInstance) {
     const demand = dailySchedule?.quantity || 0;
 
     // Get FG Stock
-    const fgStockObj = await prisma.fGStock.findUnique({ where: { itemId: item.id } });
+    const fgStockObj = await prisma.fGStock.findFirst({
+      where: { itemId: item.id, date: { lte: targetDate } },
+      orderBy: { date: 'desc' }
+    });
     const fgStock = fgStockObj?.quantity || 0;
 
     // Get WIP
-    const wips = await prisma.wIP.findMany({ where: { itemId: item.id } });
-    const totalWip = wips.reduce((acc, curr) => acc + curr.quantity, 0);
+    const allWips = await prisma.wIP.findMany({
+      where: { itemId: item.id, date: { lte: targetDate } },
+      orderBy: [{ date: 'desc' }, { shift: 'desc' }]
+    });
+    const locationWipMap = new Map();
+    for (const w of allWips) {
+      if (!locationWipMap.has(w.location)) locationWipMap.set(w.location, w);
+    }
+    const wips = Array.from(locationWipMap.values());
+    const totalWip = wips.reduce((acc: number, curr: any) => acc + curr.quantity, 0);
 
     const { status, gap, totalSupply } = calculateItemStatus({ demand, fgStock, wip: totalWip });
 
     return reply.send({
-      item_code,
-      item_name: item.itemName,
+      part_number,
+      description: item.description,
       date,
       demand,
       fg_stock: fgStock,
@@ -69,9 +80,7 @@ export default async function trackingRoutes(server: FastifyInstance) {
     targetDate.setUTCHours(0, 0, 0, 0);
 
     const items = await prisma.item.findMany();
-    const masterCartons = await prisma.masterCarton.findMany({
-      include: { toyNameItem: true }
-    });
+    const masterCartons = await prisma.masterCarton.findMany();
 
     const mcMap = new Map<string, typeof masterCartons[0]>();
     for (const mc of masterCartons) {
@@ -96,11 +105,22 @@ export default async function trackingRoutes(server: FastifyInstance) {
       });
       const demand = schedule?.quantity || 0;
 
-      const fgStockObj = await prisma.fGStock.findUnique({ where: { itemId: item.id } });
+      const fgStockObj = await prisma.fGStock.findFirst({
+        where: { itemId: item.id, date: { lte: targetDate } },
+        orderBy: { date: 'desc' }
+      });
       const fgStock = fgStockObj?.quantity || 0;
 
-      const wips = await prisma.wIP.findMany({ where: { itemId: item.id } });
-      const totalWip = wips.reduce((acc, curr) => acc + curr.quantity, 0);
+      const allWips = await prisma.wIP.findMany({
+        where: { itemId: item.id, date: { lte: targetDate } },
+        orderBy: [{ date: 'desc' }, { shift: 'desc' }]
+      });
+      const locationWipMap = new Map();
+      for (const w of allWips) {
+        if (!locationWipMap.has(w.location)) locationWipMap.set(w.location, w);
+      }
+      const wips = Array.from(locationWipMap.values());
+      const totalWip = wips.reduce((acc: number, curr: any) => acc + curr.quantity, 0);
 
       const { status, gap } = calculateItemStatus({ demand, fgStock, wip: totalWip });
 
@@ -108,13 +128,13 @@ export default async function trackingRoutes(server: FastifyInstance) {
       else if (status === 'IN_PRODUCTION') inProductionCount++;
       else if (status === 'SHORTAGE') shortageCount++;
 
-      const mc = mcMap.get(item.itemCode);
-      const toyName = mc ? mc.toyNameItem.itemName : '-';
+      const mc = mcMap.get(item.partNumber);
+      const toyName = mc ? mc.toyName : '-';
       const masterCarton = mc ? mc.cartonCode : '-';
 
       gapAnalysis.push({
-        itemCode: item.itemCode,
-        itemName: item.itemName,
+        partNumber: item.partNumber,
+        description: item.description,
         toyName,
         masterCarton,
         demand,
@@ -126,8 +146,8 @@ export default async function trackingRoutes(server: FastifyInstance) {
 
       for (const w of wips) {
         wipStatusList.push({
-          itemCode: item.itemCode,
-          itemName: item.itemName,
+          partNumber: item.partNumber,
+          description: item.description,
           location: w.location,
           qty: w.quantity,
           progress: w.progressPercent,
@@ -155,11 +175,16 @@ export default async function trackingRoutes(server: FastifyInstance) {
 
     // 1. Batch load data in 5 optimized queries
     const items = await prisma.item.findMany();
-    const fgStocks = await prisma.fGStock.findMany();
+    const fgStocks = await prisma.fGStock.findMany({
+      where: { date: { lte: targetDate } },
+      orderBy: { date: 'desc' }
+    });
     const wips = await prisma.wIP.findMany({
       where: {
+        date: { lte: targetDate },
         status: { in: ['IN_PROGRESS', 'ON_HOLD', 'DELAYED'] }
-      }
+      },
+      orderBy: [{ date: 'desc' }, { shift: 'desc' }]
     });
     const dailySchedules = await prisma.dailySchedule.findMany({
       where: { date: targetDate }
@@ -171,20 +196,32 @@ export default async function trackingRoutes(server: FastifyInstance) {
       orderBy: [{ weekStartDate: 'asc' }]
     });
 
-    const masterCartons = await prisma.masterCarton.findMany({
-      include: { toyNameItem: true }
-    });
+    const masterCartons = await prisma.masterCarton.findMany();
     
     // 2. Build maps for O(1) lookups
     const fgStockMap = new Map<string, number>();
     for (const stock of fgStocks) {
-      fgStockMap.set(stock.itemId, stock.quantity);
+      if (!fgStockMap.has(stock.itemId)) {
+        fgStockMap.set(stock.itemId, stock.quantity);
+      }
     }
 
     const wipMap = new Map<string, number>();
+    const wipDetailsMap = new Map<string, {location: string, quantity: number}[]>();
+    const seenWipLocations = new Set<string>();
     for (const wip of wips) {
-      const current = wipMap.get(wip.itemId) || 0;
-      wipMap.set(wip.itemId, current + wip.quantity);
+      const key = `${wip.itemId}_${wip.location}`;
+      if (!seenWipLocations.has(key)) {
+        seenWipLocations.add(key);
+        const current = wipMap.get(wip.itemId) || 0;
+        wipMap.set(wip.itemId, current + wip.quantity);
+        
+        const details = wipDetailsMap.get(wip.itemId) || [];
+        if (wip.quantity > 0) {
+          details.push({ location: wip.location, quantity: wip.quantity });
+        }
+        wipDetailsMap.set(wip.itemId, details);
+      }
     }
 
     const itemMap = new Map<string, typeof items[0]>();
@@ -223,21 +260,21 @@ export default async function trackingRoutes(server: FastifyInstance) {
       const item = itemMap.get(sched.itemId);
       if (!item) continue;
 
-      const mc = mcMap.get(item.itemCode);
-      const toyName = mc ? mc.toyNameItem.itemName : '-';
+      const mc = mcMap.get(item.partNumber);
+      const toyName = mc ? mc.toyName : '-';
       const masterCarton = mc ? mc.cartonCode : '-';
 
       const fgStock = fgStockMap.get(sched.itemId) || 0;
       const wip = wipMap.get(sched.itemId) || 0;
-      const totalSupply = fgStock + wip;
+      const wipDetails = wipDetailsMap.get(sched.itemId) || [];
 
       const shiftDemand = sched.quantity;
       const dailyDemand = dailyDemandMap.get(sched.itemId) || 0;
       const weeklyDemand = weeklyDemandMap.get(sched.itemId) || 0;
 
-      const shiftGap = totalSupply - shiftDemand;
-      const dailyGap = totalSupply - dailyDemand;
-      const weeklyGap = totalSupply - weeklyDemand;
+      const shiftGap = fgStock - shiftDemand;
+      const dailyGap = fgStock - dailyDemand;
+      const weeklyGap = fgStock - weeklyDemand;
 
       const dailyShortage = dailyGap < 0 ? Math.abs(dailyGap) : 0;
       const weeklyShortage = weeklyGap < 0 ? Math.abs(weeklyGap) : 0;
@@ -270,13 +307,14 @@ export default async function trackingRoutes(server: FastifyInstance) {
           itemId: sched.itemId,
           toyName,
           masterCarton,
-          itemCode: item.itemCode,
+          partNumber: item.partNumber,
           date: sched.date.toISOString().split('T')[0],
           shift: sched.shift,
           dailyDemand,
           weeklyDemand,
           fgStock,
           wip,
+          wipDetails,
           dailyShortage,
           weeklyShortage,
           status: 'SHORTAGE',

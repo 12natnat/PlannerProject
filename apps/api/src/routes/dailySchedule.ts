@@ -8,7 +8,15 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
     const { date, shift } = request.query as { date?: string; shift?: string };
     
     const whereClause: any = {};
-    if (date) whereClause.date = new Date(date);
+    if (date) {
+      whereClause.date = new Date(date);
+    } else {
+      // Default: show data from up to 14 days ago to keep queries fast (since auto-cleanup is disabled)
+      const cutoff = new Date();
+      cutoff.setUTCHours(0, 0, 0, 0);
+      cutoff.setDate(cutoff.getDate() - 14);
+      whereClause.date = { gte: cutoff };
+    }
     if (shift) whereClause.shift = parseInt(shift);
 
     const schedules = await prisma.dailySchedule.findMany({
@@ -18,10 +26,9 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
     });
     
     // Fetch related MasterCarton and Toy Name mapping
-    const itemCodes = [...new Set(schedules.map(s => s.item.itemCode))];
+    const itemCodes = [...new Set(schedules.map(s => s.item.partNumber))];
     const masterCartons = await prisma.masterCarton.findMany({
       where: { partNumberCode: { in: itemCodes } },
-      include: { toyNameItem: true },
     });
 
     const mcMap = new Map<string, any>();
@@ -30,11 +37,11 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
     }
 
     const enhancedSchedules = schedules.map(s => {
-      const mc = mcMap.get(s.item.itemCode);
+      const mc = mcMap.get(s.item.partNumber);
       return {
         ...s,
         masterCarton: mc ? mc.cartonCode : undefined,
-        toyName: mc && mc.toyNameItem ? mc.toyNameItem.itemName : s.item.itemName,
+        toyName: mc ? mc.toyName : s.item.description,
       };
     });
     
@@ -46,21 +53,21 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
     '/api/v1/daily-schedule',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { date, shift, itemId, itemCode, quantity, saveMode } = request.body as any;
+      const { date, shift, itemId, partNumber, quantity, saveMode } = request.body as any;
 
-      if (!date || !shift || (!itemId && !itemCode) || quantity === undefined) {
+      if (!date || !shift || (!itemId && !partNumber) || quantity === undefined) {
         return reply.code(400).send({ error: 'Bad Request', message: 'Missing required fields' });
       }
 
       const scheduleDate = new Date(date);
 
-      // Resolve itemId from itemCode if needed
+      // Resolve itemId from partNumber if needed
       let finalItemId = itemId;
-      if (!finalItemId && itemCode) {
-        let item = await prisma.item.findUnique({ where: { itemCode } });
+      if (!finalItemId && partNumber) {
+        let item = await prisma.item.findUnique({ where: { partNumber } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: itemCode, unit: 'PCS' },
+            data: { partNumber, description: partNumber, unit: 'PCS' },
           });
         }
         finalItemId = item.id;
@@ -133,14 +140,14 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
       }
 
       if (saveMode === 'overwrite') {
-        const uniqueCodes = [...new Set(records.map((r: any) => r.itemCode as string).filter(Boolean))];
-        const existingItems = await prisma.item.findMany({ where: { itemCode: { in: uniqueCodes } } });
+        const uniqueCodes = [...new Set(records.map((r: any) => r.partNumber as string).filter(Boolean))];
+        const existingItems = await prisma.item.findMany({ where: { partNumber: { in: uniqueCodes } } });
         const itemCodeToId: Record<string, string> = {};
-        for (const item of existingItems) itemCodeToId[item.itemCode] = item.id;
+        for (const item of existingItems) itemCodeToId[item.partNumber] = item.id;
 
         const scopeMap = new Map<string, { date: Date; shift: number; itemIds: Set<string> }>();
         for (const r of records) {
-          if (!r.date || !r.shift || !r.itemCode || r.quantity === undefined) continue;
+          if (!r.date || !r.shift || !r.partNumber || r.quantity === undefined) continue;
           const date = new Date(r.date);
           const shift = parseInt(r.shift);
           const key = `${date.getTime()}_${shift}`;
@@ -148,8 +155,8 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
           if (!scopeMap.has(key)) {
             scopeMap.set(key, { date, shift, itemIds: new Set() });
           }
-          if (itemCodeToId[r.itemCode]) {
-            scopeMap.get(key)!.itemIds.add(itemCodeToId[r.itemCode]);
+          if (itemCodeToId[r.partNumber]) {
+            scopeMap.get(key)!.itemIds.add(itemCodeToId[r.partNumber]);
           }
         }
 
@@ -166,45 +173,36 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
 
       const results = [];
       for (const record of records) {
-        const { date, shift, itemCode, toyName, masterCarton, quantity } = record;
-        if (!date || !shift || !itemCode || quantity === undefined) continue;
+        const { date, shift, partNumber, toyName, masterCarton, quantity } = record;
+        if (!date || !shift || !partNumber || quantity === undefined) continue;
 
         // Find or create Part Number Item
-        let item = await prisma.item.findUnique({ where: { itemCode } });
+        let item = await prisma.item.findUnique({ where: { partNumber } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: itemCode, unit: 'PCS' },
+            data: { partNumber, description: partNumber, unit: 'PCS' },
           });
         }
 
         // Handle Toy Name and Master Carton relationship
         if (toyName && masterCarton) {
-          // Find or create Toy Name item (using toyName as both code and name)
-          const toyNameCode = toyName.replace(/\s+/g, '_').toUpperCase();
-          let toyNameItem = await prisma.item.findUnique({ where: { itemCode: toyNameCode } });
-          if (!toyNameItem) {
-            toyNameItem = await prisma.item.create({
-              data: { itemCode: toyNameCode, itemName: toyName, unit: 'SET' },
-            });
-          }
-
           // Create or update Master Carton record
           let masterCartonRecord = await prisma.masterCarton.findUnique({ where: { cartonCode: masterCarton } });
           if (!masterCartonRecord) {
             masterCartonRecord = await prisma.masterCarton.create({
               data: {
                 cartonCode: masterCarton,
-                toyNameItemId: toyNameItem.id,
-                partNumberCode: itemCode,
+                toyName,
+                partNumberCode: partNumber,
               },
             });
-          } else if (masterCartonRecord.partNumberCode !== itemCode || masterCartonRecord.toyNameItemId !== toyNameItem.id) {
+          } else if (masterCartonRecord.partNumberCode !== partNumber || masterCartonRecord.toyName !== toyName) {
             // Update if relationship changed
             masterCartonRecord = await prisma.masterCarton.update({
               where: { cartonCode: masterCarton },
               data: {
-                toyNameItemId: toyNameItem.id,
-                partNumberCode: itemCode,
+                toyName,
+                partNumberCode: partNumber,
               },
             });
           }
@@ -270,16 +268,16 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const { date, shift, itemCode, quantity } = request.body as any;
+      const { date, shift, partNumber, quantity } = request.body as any;
 
       const scheduleDate = new Date(date);
       
       let finalItemId = undefined;
-      if (itemCode) {
-        let item = await prisma.item.findUnique({ where: { itemCode } });
+      if (partNumber) {
+        let item = await prisma.item.findUnique({ where: { partNumber } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: itemCode, unit: 'PCS' },
+            data: { partNumber, description: partNumber, unit: 'PCS' },
           });
         }
         finalItemId = item.id;

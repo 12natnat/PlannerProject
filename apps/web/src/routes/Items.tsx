@@ -35,13 +35,13 @@ export function Items() {
 
   // 1. Part Numbers / Master Items Form & Edit State
   const [showItemForm, setShowItemForm] = useState(false);
-  const [editingItem, setEditingItem] = useState<{ id: string; itemCode: string; itemName: string; unit: string } | null>(null);
-  const [itemFormData, setItemFormData] = useState({ itemCode: '', itemName: '', unit: 'pcs' });
+  const [editingItem, setEditingItem] = useState<{ id: string; partNumber: string; description: string; unit: string } | null>(null);
+  const [itemFormData, setItemFormData] = useState({ partNumber: '', description: '', unit: 'pcs' });
 
   // 1b. Toy Names Form & Edit State
   const [showToyForm, setShowToyForm] = useState(false);
-  const [editingToy, setEditingToy] = useState<{ id: string; itemCode: string; itemName: string; unit: string } | null>(null);
-  const [toyFormData, setToyFormData] = useState({ itemCode: '', itemName: '', unit: 'SET' });
+  const [editingToy, setEditingToy] = useState<{ id: string; partNumber: string; description: string; unit: string } | null>(null);
+  const [toyFormData, setToyFormData] = useState({ partNumber: '', description: '', unit: 'SET' });
 
   const itemUnitOptions = useMemo(() => {
     const opts = units.map(u => ({ value: u, label: u }));
@@ -72,16 +72,16 @@ export function Items() {
   // CRUD for Part Numbers & Toy Names
   
   // Filter items into Part Numbers (itemName === itemCode)
-  const partNumbers = items.filter(item => item.itemCode === item.itemName);
+  const partNumbers = items.filter(item => item.partNumber === item.description);
   const filteredItems = partNumbers.filter(
-    item => item.itemCode.toLowerCase().includes(search.toLowerCase())
+    item => item.partNumber.toLowerCase().includes(search.toLowerCase())
   );
 
   // Filter items into Toy Names (itemName !== itemCode)
-  const toyNames = items.filter(item => item.itemCode !== item.itemName);
+  const toyNames = items.filter(item => item.partNumber !== item.description);
   const filteredToyNames = toyNames.filter(
-    item => item.itemName.toLowerCase().includes(search.toLowerCase()) ||
-            item.itemCode.toLowerCase().includes(search.toLowerCase())
+    item => item.description.toLowerCase().includes(search.toLowerCase()) ||
+            item.partNumber.toLowerCase().includes(search.toLowerCase())
   );
 
   // Master Cartons
@@ -97,19 +97,19 @@ export function Items() {
       if (editingItem) {
         await updateItem.mutateAsync({
           id: editingItem.id,
-          itemCode: itemFormData.itemCode,
-          itemName: itemFormData.itemCode, // Keep them identical for Part Numbers
+          partNumber: itemFormData.partNumber,
+          description: itemFormData.partNumber, // Keep them identical for Part Numbers
           unit: itemFormData.unit
         });
         setEditingItem(null);
       } else {
         await createItem.mutateAsync({
-          itemCode: itemFormData.itemCode,
-          itemName: itemFormData.itemCode, // Keep them identical for Part Numbers
+          partNumber: itemFormData.partNumber,
+          description: itemFormData.partNumber, // Keep them identical for Part Numbers
           unit: itemFormData.unit
         });
       }
-      setItemFormData({ itemCode: '', itemName: '', unit: units[0] || 'pcs' });
+      setItemFormData({ partNumber: '', description: '', unit: units[0] || 'pcs' });
       setShowItemForm(false);
     } catch (err: any) {
       alert(err.message || 'Failed to save part number');
@@ -122,20 +122,20 @@ export function Items() {
       if (editingToy) {
         await updateItem.mutateAsync({
           id: editingToy.id,
-          itemCode: toyFormData.itemCode,
-          itemName: toyFormData.itemName,
+          partNumber: toyFormData.partNumber,
+          description: toyFormData.description,
           unit: toyFormData.unit
         });
         setEditingToy(null);
       } else {
         const randomCode = `PN-${Date.now().toString().slice(-5)}`;
         await createItem.mutateAsync({
-          itemCode: toyFormData.itemCode || randomCode,
-          itemName: toyFormData.itemName,
+          partNumber: toyFormData.partNumber || randomCode,
+          description: toyFormData.description,
           unit: toyFormData.unit
         });
       }
-      setToyFormData({ itemCode: '', itemName: '', unit: 'SET' });
+      setToyFormData({ partNumber: '', description: '', unit: 'SET' });
       setShowToyForm(false);
     } catch (err: any) {
       alert(err.message || 'Failed to save toy name');
@@ -149,7 +149,7 @@ export function Items() {
         await updateMasterCarton.mutateAsync({
           id: editingMc.id,
           cartonCode: mcFormData.cartonCode,
-          toyNameItemId: mcFormData.toyNameItemId,
+          toyName: mcFormData.toyNameItemId,
           partNumberCode: mcFormData.partNumberCode
         });
         setEditingMc(null);
@@ -267,7 +267,7 @@ export function Items() {
               onClick={() => {
                 setShowItemForm(!showItemForm);
                 setEditingItem(null);
-                setItemFormData({ itemCode: '', itemName: '', unit: units[0] || 'pcs' });
+                setItemFormData({ partNumber: '', description: '', unit: units[0] || 'pcs' });
               }}
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
             >
@@ -286,19 +286,19 @@ export function Items() {
                     type="text" 
                     required
                     className="w-full h-10 px-3 py-2 border rounded-md"
-                    value={itemFormData.itemCode}
-                    onChange={e => setItemFormData({...itemFormData, itemCode: e.target.value})}
+                    value={itemFormData.partNumber}
+                    onChange={e => setItemFormData({...itemFormData, partNumber: e.target.value})}
                     placeholder="e.g. PROD-F006"
                   />
                 </div>
                 <div className="flex-1 min-w-[250px] space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">Item Name</label>
+                  <label className="text-sm font-medium text-muted-foreground">Item Name / Description</label>
                   <input 
                     type="text" 
                     required
                     className="w-full h-10 px-3 py-2 border rounded-md"
-                    value={itemFormData.itemName}
-                    onChange={e => setItemFormData({...itemFormData, itemName: e.target.value})}
+                    value={itemFormData.description}
+                    onChange={e => setItemFormData({...itemFormData, description: e.target.value})}
                     placeholder="e.g. Component X"
                   />
                 </div>
@@ -326,7 +326,7 @@ export function Items() {
                   onClick={() => {
                     setShowItemForm(false);
                     setEditingItem(null);
-                    setItemFormData({ itemCode: '', itemName: '', unit: units[0] || 'pcs' });
+                    setItemFormData({ partNumber: '', description: '', unit: units[0] || 'pcs' });
                   }}
                   className="h-10 border hover:bg-secondary px-4 rounded-md font-medium text-sm"
                 >
@@ -374,8 +374,8 @@ export function Items() {
                     {filteredItems.map((item, index) => (
                       <tr key={item.id} className="hover:bg-muted/50 transition-colors">
                         <td className="px-6 py-4">{index + 1}</td>
-                        <td className="px-6 py-4 font-medium">{item.itemCode}</td>
-                        <td className="px-6 py-4">{item.itemName}</td>
+                        <td className="px-6 py-4 font-medium">{item.partNumber}</td>
+                        <td className="px-6 py-4">{item.description}</td>
                         <td className="px-6 py-4">
                           <span className="bg-secondary px-2 py-1 rounded text-xs">{item.unit}</span>
                         </td>
@@ -384,7 +384,7 @@ export function Items() {
                             <button
                               onClick={() => {
                                 setEditingItem(item);
-                                setItemFormData({ itemCode: item.itemCode, itemName: item.itemName, unit: item.unit });
+                                setItemFormData({ partNumber: item.partNumber, description: item.description, unit: item.unit });
                                 setShowItemForm(true);
                               }}
                               className="text-muted-foreground hover:text-primary p-1 rounded-md hover:bg-primary/10 transition-colors"
@@ -421,7 +421,7 @@ export function Items() {
               onClick={() => {
                 setShowToyForm(!showToyForm);
                 setEditingToy(null);
-                setToyFormData({ itemCode: '', itemName: '', unit: 'SET' });
+                setToyFormData({ partNumber: '', description: '', unit: 'SET' });
               }}
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
             >
@@ -439,8 +439,8 @@ export function Items() {
                   <input 
                     type="text" 
                     className="w-full h-10 px-3 py-2 border rounded-md bg-background"
-                    value={toyFormData.itemCode}
-                    onChange={e => setToyFormData({...toyFormData, itemCode: e.target.value})}
+                    value={toyFormData.partNumber}
+                    onChange={e => setToyFormData({...toyFormData, partNumber: e.target.value})}
                     placeholder="e.g. PN-12345"
                   />
                 </div>
@@ -450,8 +450,8 @@ export function Items() {
                     type="text" 
                     required
                     className="w-full h-10 px-3 py-2 border rounded-md bg-background"
-                    value={toyFormData.itemName}
-                    onChange={e => setToyFormData({...toyFormData, itemName: e.target.value})}
+                    value={toyFormData.description}
+                    onChange={e => setToyFormData({...toyFormData, description: e.target.value})}
                     placeholder="e.g. Barbie Milan Edition"
                   />
                 </div>
@@ -479,7 +479,7 @@ export function Items() {
                   onClick={() => {
                     setShowToyForm(false);
                     setEditingToy(null);
-                    setToyFormData({ itemCode: '', itemName: '', unit: 'SET' });
+                    setToyFormData({ partNumber: '', description: '', unit: 'SET' });
                   }}
                   className="h-10 border hover:bg-secondary px-4 rounded-md font-medium text-sm"
                 >
@@ -527,8 +527,8 @@ export function Items() {
                     {filteredToyNames.map((item, index) => (
                       <tr key={item.id} className="hover:bg-muted/50 transition-colors">
                         <td className="px-6 py-4">{index + 1}</td>
-                        <td className="px-6 py-4 font-mono text-xs">{item.itemCode}</td>
-                        <td className="px-6 py-4 font-medium">{item.itemName}</td>
+                        <td className="px-6 py-4 font-mono text-xs">{item.partNumber}</td>
+                        <td className="px-6 py-4 font-medium">{item.description}</td>
                         <td className="px-6 py-4">
                           <span className="bg-secondary px-2 py-1 rounded text-xs">{item.unit}</span>
                         </td>
@@ -537,7 +537,7 @@ export function Items() {
                             <button
                               onClick={() => {
                                 setEditingToy(item);
-                                setToyFormData({ itemCode: item.itemCode, itemName: item.itemName, unit: item.unit });
+                                setToyFormData({ partNumber: item.partNumber, description: item.description, unit: item.unit });
                                 setShowToyForm(true);
                               }}
                               className="text-muted-foreground hover:text-primary p-1 rounded-md hover:bg-primary/10 transition-colors"
@@ -574,7 +574,7 @@ export function Items() {
               onClick={() => {
                 setShowMcForm(!showMcForm);
                 setEditingMc(null);
-                setMcFormData({ cartonCode: '', toyNameItemId: toyNames[0]?.id || '', partNumberCode: partNumbers[0]?.itemCode || '' });
+                setMcFormData({ cartonCode: '', toyNameItemId: toyNames[0]?.id || '', partNumberCode: partNumbers[0]?.partNumber || '' });
               }}
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
             >
@@ -607,7 +607,7 @@ export function Items() {
                     onChange={e => setMcFormData({...mcFormData, partNumberCode: e.target.value})}
                   >
                     {partNumbers.map(p => (
-                      <option key={p.id} value={p.itemCode}>{p.itemCode}</option>
+                      <option key={p.id} value={p.partNumber}>{p.partNumber}</option>
                     ))}
                   </select>
                 </div>
@@ -620,7 +620,7 @@ export function Items() {
                     onChange={e => setMcFormData({...mcFormData, toyNameItemId: e.target.value})}
                   >
                     {toyNames.map(t => (
-                      <option key={t.id} value={t.id}>{t.itemName}</option>
+                      <option key={t.id} value={t.id}>{t.description}</option>
                     ))}
                   </select>
                 </div>
@@ -689,7 +689,7 @@ export function Items() {
                           <td className="px-6 py-4">{index + 1}</td>
                           <td className="px-6 py-4 font-medium text-blue-600">{mc.cartonCode}</td>
                           <td className="px-6 py-4">{mc.partNumberCode}</td>
-                          <td className="px-6 py-4">{matchedToy ? matchedToy.itemName : '-'}</td>
+                          <td className="px-6 py-4">{matchedToy ? matchedToy.description : '-'}</td>
                           <td className="px-6 py-4 text-right">
                             <div className="flex items-center justify-end gap-2">
                               <button

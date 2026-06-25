@@ -57,8 +57,8 @@ export function WIP() {
     // Search query matches part number or name
     const matchesSearch = 
       !searchQuery ||
-      wip.item.itemCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      wip.item.itemName.toLowerCase().includes(searchQuery.toLowerCase());
+      wip.item.partNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      wip.item.description.toLowerCase().includes(searchQuery.toLowerCase());
 
     // Location matches selected filter option
     const matchesLocation = 
@@ -78,12 +78,12 @@ export function WIP() {
   const groupedWips = React.useMemo(() => {
     const groups: Record<string, any> = {};
     for (const wip of filteredWips) {
-      const key = wip.item.itemCode;
+      const key = wip.item.partNumber;
       if (!groups[key]) {
         groups[key] = {
           id: key,
-          itemCode: wip.item.itemCode,
-          itemName: wip.item.itemName,
+          partNumber: wip.item.partNumber,
+          description: wip.item.description,
           locations: {},
           total: 0,
           ids: [],
@@ -99,12 +99,12 @@ export function WIP() {
         groups[key].recordedDate = wipDateStr;
       }
     }
-    return Object.values(groups).sort((a: any, b: any) => a.itemCode.localeCompare(b.itemCode));
+    return Object.values(groups).sort((a: any, b: any) => a.partNumber.localeCompare(b.partNumber));
   }, [filteredWips]);
 
   const itemOptions = items.map((item: any) => ({
     value: item.id,
-    label: `${item.itemCode} - ${item.itemName}`
+    label: `${item.partNumber} - ${item.description}`
   }));
 
   const locationOptions = React.useMemo(() => {
@@ -134,9 +134,9 @@ export function WIP() {
         const parsedRecords: any[] = [];
         data.forEach((row: any, index) => {
           const itemKey = Object.keys(row).find(k => k.trim().toLowerCase().includes('no toy')) || Object.keys(row)[1];
-          const itemCode = String(row[itemKey] || '').trim();
+          const partNumber = String(row[itemKey] || '').trim();
           
-          if (!itemCode) return;
+          if (!partNumber) return;
           
           Object.keys(row).forEach(key => {
             const k = key.trim().toLowerCase();
@@ -147,7 +147,7 @@ export function WIP() {
                 if (!isNaN(numVal)) {
                   parsedRecords.push({
                     id: `import-${index}-${key}`,
-                    itemCode,
+                    partNumber,
                     location: key.trim(),
                     quantity: numVal * 1000,
                     date: new Date().toISOString().split('T')[0]
@@ -269,7 +269,7 @@ export function WIP() {
                 onChange={val => setFormData({...formData, itemId: val})}
                 onAdd={async (search) => {
                   try {
-                    const res = await createItem.mutateAsync({ itemCode: search, itemName: search, unit: 'PCS' }) as any;
+                    const res = await createItem.mutateAsync({ partNumber: search, description: search, unit: 'PCS' }) as any;
                     if (res?.data?.id) {
                       setFormData(prev => ({...prev, itemId: res.data.id}));
                     }
@@ -461,7 +461,7 @@ export function WIP() {
                         />
                       </td>
                     )}
-                    <td className="px-6 py-4 font-medium whitespace-nowrap">{group.itemCode}</td>
+                    <td className="px-6 py-4 font-medium whitespace-nowrap">{group.partNumber}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-muted-foreground">{group.recordedDate ? new Date(group.recordedDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}</td>
                     {activeLocations.map(loc => (
                       <td key={loc} className="px-6 py-4 text-right font-medium">
@@ -544,9 +544,9 @@ export function WIP() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
-                        {importData.filter(d => d.itemCode.toLowerCase().includes(importSearch.toLowerCase()) || d.location.toLowerCase().includes(importSearch.toLowerCase())).map((row) => (
+                        {importData.filter(d => d.partNumber.toLowerCase().includes(importSearch.toLowerCase()) || d.location.toLowerCase().includes(importSearch.toLowerCase())).map((row) => (
                           <tr key={row.id} className="hover:bg-muted/50">
-                            <td className="px-4 py-2 font-medium">{row.itemCode}</td>
+                            <td className="px-4 py-2 font-medium">{row.partNumber}</td>
                             <td className="px-4 py-2"><span className="bg-secondary px-2 py-1 rounded text-xs">{row.location}</span></td>
                             <td className="px-4 py-2 text-right">
                               <input 

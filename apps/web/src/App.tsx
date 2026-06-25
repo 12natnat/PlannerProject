@@ -1,8 +1,8 @@
-
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createRouter, createRoute, createRootRoute, redirect } from '@tanstack/react-router';
 import { Layout } from './components/layout/Layout';
 import { Dashboard } from './routes/Dashboard';
+import WeeklyHistory from './routes/WeeklyHistory';
 import { Login } from './routes/Login';
 import { useAuthStore } from './stores/authStore';
 import './index.css';
@@ -64,6 +64,7 @@ import { Items } from './routes/Items';
 import { Users } from './routes/Users';
 import { DailySchedule } from './routes/DailySchedule';
 import { FGStock } from './routes/FGStock';
+import { FGHistory } from './routes/FGHistory';
 import { WIP } from './routes/WIP';
 import { WeeklyDemand } from './routes/WeeklyDemand';
 import { ShortageDetail } from './routes/ShortageDetail';
@@ -84,6 +85,12 @@ const fgStockRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/fg-stock',
   component: FGStock,
+});
+
+const fgHistoryRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/fg-history',
+  component: FGHistory,
 });
 
 const wipRoute = createRoute({
@@ -110,6 +117,12 @@ const shortageDetailRoute = createRoute({
   component: ShortageDetail,
 });
 
+const weeklyHistoryRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/weekly-history',
+  component: WeeklyHistory,
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
   authLayoutRoute.addChildren([
@@ -118,10 +131,12 @@ const routeTree = rootRoute.addChildren([
     itemsRoute,
     dailyScheduleRoute,
     fgStockRoute,
+    fgHistoryRoute,
     wipRoute,
     usersRoute,
     weeklyDemandRoute,
     shortageDetailRoute,
+    weeklyHistoryRoute,
   ]),
 ]);
 

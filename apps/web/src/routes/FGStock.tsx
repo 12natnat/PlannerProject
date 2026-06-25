@@ -27,7 +27,7 @@ export function FGStock() {
   const [importSearch, setImportSearch] = useState('');
 
   const [showQuickAdd, setShowQuickAdd] = useState(false);
-  const [quickAddItem, setQuickAddItem] = useState({ itemCode: '', itemName: '' });
+  const [quickAddItem, setQuickAddItem] = useState({ partNumber: '', description: '' });
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -43,7 +43,7 @@ export function FGStock() {
   }, []);
 
   const [formData, setFormData] = useState({
-    itemCode: '',
+    partNumber: '',
     quantity: 0,
     date: new Date().toISOString().split('T')[0],
     notes: '',
@@ -61,8 +61,8 @@ export function FGStock() {
   const filteredStocks = stocks.filter(stock => {
     if (!searchQuery) return true;
     const lowerQuery = searchQuery.toLowerCase();
-    return stock.item.itemCode.toLowerCase().includes(lowerQuery) || 
-           stock.item.itemName.toLowerCase().includes(lowerQuery);
+    return stock.item.partNumber.toLowerCase().includes(lowerQuery) || 
+           stock.item.description.toLowerCase().includes(lowerQuery);
   });
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -84,12 +84,12 @@ export function FGStock() {
           
           return {
             id: `import-${index}`,
-            itemCode: String((row as any)[itemKey] || '').trim(),
+            partNumber: String((row as any)[itemKey] || '').trim(),
             quantity: Number((row as any)[qtyKey]) || 0,
             date: new Date().toISOString().split('T')[0],
             unit: ''
           };
-        }).filter(r => r.itemCode);
+        }).filter(r => r.partNumber);
         
         setImportData(parsedRecords);
       } catch (err) {
@@ -171,7 +171,7 @@ export function FGStock() {
 
   const handleSubmit = async (e: React.FormEvent, saveMode: 'overwrite' | 'add') => {
     e.preventDefault();
-    if (!formData.itemCode) return;
+    if (!formData.partNumber) return;
 
     try {
       await upsertFG.mutateAsync({
@@ -180,7 +180,7 @@ export function FGStock() {
         saveMode
       });
       setShowForm(false);
-      setFormData(prev => ({ ...prev, itemCode: '', quantity: 0, notes: '', unit: units[0] || 'pcs' }));
+      setFormData(prev => ({ ...prev, partNumber: '', quantity: 0, notes: '', unit: units[0] || 'pcs' }));
     } catch (err: any) {
       alert(err.message || 'Failed to save FG Stock');
     }
@@ -232,52 +232,52 @@ export function FGStock() {
                     required
                     placeholder="Search or select Part Number..."
                     className="w-full h-10 px-3 border rounded-md bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                    value={formData.itemCode}
+                    value={formData.partNumber}
                     onFocus={() => setIsDropdownOpen(true)}
                     onChange={e => {
-                      setFormData({...formData, itemCode: e.target.value});
+                      setFormData({...formData, partNumber: e.target.value});
                       setIsDropdownOpen(true);
                     }}
                   />
                   {isDropdownOpen && (
                     <div className="absolute z-10 w-full mt-1 bg-popover border border-border rounded-md shadow-lg max-h-60 overflow-y-auto bg-card text-card-foreground">
                       {items.filter(item => 
-                        item.itemCode.toLowerCase().includes(formData.itemCode.toLowerCase()) ||
-                        item.itemName.toLowerCase().includes(formData.itemCode.toLowerCase())
+                        item.partNumber.toLowerCase().includes(formData.partNumber.toLowerCase()) ||
+                        item.description.toLowerCase().includes(formData.partNumber.toLowerCase())
                       ).length > 0 ? (
                         items.filter(item => 
-                          item.itemCode.toLowerCase().includes(formData.itemCode.toLowerCase()) ||
-                          item.itemName.toLowerCase().includes(formData.itemCode.toLowerCase())
+                          item.partNumber.toLowerCase().includes(formData.partNumber.toLowerCase()) ||
+                          item.description.toLowerCase().includes(formData.partNumber.toLowerCase())
                         ).map(item => (
                           <button
                             key={item.id}
                             type="button"
                             className="w-full text-left px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground flex flex-col border-b border-border/50 last:border-b-0"
                             onClick={() => {
-                              setFormData({...formData, itemCode: item.itemCode, unit: item.unit});
+                              setFormData({...formData, partNumber: item.partNumber, unit: item.unit});
                               setIsDropdownOpen(false);
                             }}
                           >
-                            <span className="font-semibold">{item.itemCode}</span>
-                            <span className="text-xs text-muted-foreground">{item.itemName}</span>
+                            <span className="font-semibold">{item.partNumber}</span>
+                            <span className="text-xs text-muted-foreground">{item.description}</span>
                           </button>
                         ))
                       ) : (
                         <div className="px-3 py-2 text-sm text-muted-foreground">No matches found</div>
                       )}
                       
-                      {formData.itemCode.trim() !== '' && !items.some(item => item.itemCode.toLowerCase() === formData.itemCode.toLowerCase()) && (
+                      {formData.partNumber.trim() !== '' && !items.some(item => item.partNumber.toLowerCase() === formData.partNumber.toLowerCase()) && (
                         <button
                           type="button"
                           className="w-full text-left px-3 py-2.5 text-sm text-primary hover:bg-primary/10 flex items-center gap-2 font-medium border-t bg-muted/30"
                           onClick={() => {
-                            setQuickAddItem(prev => ({ ...prev, itemCode: formData.itemCode }));
+                            setQuickAddItem(prev => ({ ...prev, partNumber: formData.partNumber }));
                             setShowQuickAdd(true);
                             setIsDropdownOpen(false);
                           }}
                         >
                           <Plus size={16} />
-                          <span>Add new: "{formData.itemCode}"</span>
+                          <span>Add new: "{formData.partNumber}"</span>
                         </button>
                       )}
                     </div>
@@ -286,7 +286,7 @@ export function FGStock() {
                 <button
                   type="button"
                   onClick={() => {
-                    setQuickAddItem(prev => ({ ...prev, itemCode: formData.itemCode }));
+                    setQuickAddItem(prev => ({ ...prev, partNumber: formData.partNumber }));
                     setShowQuickAdd(true);
                   }}
                   className="h-10 px-3 border rounded-md bg-secondary hover:bg-secondary/80 flex items-center justify-center gap-1 text-sm font-medium shrink-0"
@@ -386,7 +386,7 @@ export function FGStock() {
                         />
                       </td>
                     )}
-                    <td className="px-6 py-4 font-medium">{stock.item.itemCode}</td>
+                    <td className="px-6 py-4 font-medium">{stock.item.partNumber}</td>
                     <td className="px-6 py-4 text-right font-bold text-green-600 dark:text-green-500">{stock.quantity}</td>
                     <td className="px-6 py-4 text-xs">
                       {format(new Date(stock.date || stock.updatedAt), 'dd MMM yyyy')}
@@ -405,8 +405,8 @@ export function FGStock() {
                                 date: stock.date ? stock.date.split('T')[0] : new Date().toISOString().split('T')[0],
                                 quantity: stock.quantity,
                                 notes: stock.notes || '',
-                                itemCode: stock.item.itemCode,
-                                itemName: stock.item.itemName,
+                                partNumber: stock.item.partNumber,
+                                description: stock.item.description,
                               }
                             })}
                             className="p-1.5 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950 rounded-md transition-colors"
@@ -476,9 +476,9 @@ export function FGStock() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
-                        {importData.filter(d => d.itemCode.toLowerCase().includes(importSearch.toLowerCase())).map((row) => (
+                        {importData.filter(d => d.partNumber.toLowerCase().includes(importSearch.toLowerCase())).map((row) => (
                           <tr key={row.id} className="hover:bg-muted/50">
-                            <td className="px-4 py-2 font-medium">{row.itemCode}</td>
+                            <td className="px-4 py-2 font-medium">{row.partNumber}</td>
                             <td className="px-4 py-2 text-right">
                               <input 
                                 type="number" 
@@ -551,16 +551,16 @@ export function FGStock() {
             
             <form onSubmit={async (e) => {
               e.preventDefault();
-              if (!quickAddItem.itemCode) return;
+              if (!quickAddItem.partNumber) return;
               try {
                 await createItem.mutateAsync({
-                  itemCode: quickAddItem.itemCode,
-                  itemName: quickAddItem.itemCode, // Set itemName equal to itemCode under the hood
+                  partNumber: quickAddItem.partNumber,
+                  description: quickAddItem.partNumber, // Set description equal to partNumber under the hood
                   unit: formData.unit || 'pcs'
                 });
-                setFormData(prev => ({ ...prev, itemCode: quickAddItem.itemCode }));
+                setFormData(prev => ({ ...prev, partNumber: quickAddItem.partNumber }));
                 setShowQuickAdd(false);
-                setQuickAddItem({ itemCode: '', itemName: '' });
+                setQuickAddItem({ partNumber: '', description: '' });
               } catch (err: any) {
                 alert(err.message || 'Failed to create Part Number');
               }
@@ -572,8 +572,8 @@ export function FGStock() {
                   required
                   placeholder="e.g. PROD-F006"
                   className="w-full h-10 px-3 border rounded-md bg-background"
-                  value={quickAddItem.itemCode}
-                  onChange={e => setQuickAddItem({...quickAddItem, itemCode: e.target.value})}
+                  value={quickAddItem.partNumber}
+                  onChange={e => setQuickAddItem({...quickAddItem, partNumber: e.target.value})}
                 />
               </div>
               
@@ -615,7 +615,7 @@ export function FGStock() {
             <form onSubmit={handleEditSubmit} className="space-y-4">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-muted-foreground">Part Number</label>
-                <div className="font-semibold">{editModal.data.itemCode} - {editModal.data.itemName}</div>
+                <div className="font-semibold">{editModal.data.partNumber} - {editModal.data.description}</div>
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Date</label>

@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 
 export function ItemTracking() {
-  const [selectedItemCode, setSelectedItemCode] = useState<string>('');
+  const [selectedPartNumber, setSelectedPartNumber] = useState<string>('');
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedShift, setSelectedShift] = useState<string>('');
 
@@ -28,22 +28,22 @@ export function ItemTracking() {
   // Options format for SearchableSelect
   const itemOptions = useMemo(() => {
     return items.map(item => ({
-      value: item.itemCode,
-      label: `${item.itemCode} - ${item.itemName} (${item.unit})`
+      value: item.partNumber,
+      label: `${item.partNumber} - ${item.description} (${item.unit})`
     }));
   }, [items]);
 
   // Fetch tracking details
   const { data: trackingData, isLoading: loadingTracking, error: trackingError, refetch } = useTracking(
-    selectedItemCode || undefined,
+    selectedPartNumber || undefined,
     selectedDate,
     selectedShift || undefined
   );
 
   const selectedItemDetails = useMemo(() => {
-    if (!selectedItemCode) return null;
-    return items.find(item => item.itemCode === selectedItemCode);
-  }, [selectedItemCode, items]);
+    if (!selectedPartNumber) return null;
+    return items.find(item => item.partNumber === selectedPartNumber);
+  }, [selectedPartNumber, items]);
 
   // Calculate percentage of demand covered by FG and WIP for the visual bar
   const coverageMetrics = useMemo(() => {
@@ -66,7 +66,7 @@ export function ItemTracking() {
   }, [trackingData]);
 
   const handleReset = () => {
-    setSelectedItemCode('');
+    setSelectedPartNumber('');
     setSelectedShift('');
   };
 
@@ -111,7 +111,7 @@ export function ItemTracking() {
             Menganalisis kecukupan stok Finish Good (FG) dan Work in Progress (WIP) terhadap kebutuhan produksi (demand).
           </p>
         </div>
-        {selectedItemCode && (
+        {selectedPartNumber && (
           <button
             onClick={handleReset}
             className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground hover:text-foreground bg-background hover:bg-muted border px-3 py-2 rounded-md transition-colors"
@@ -125,7 +125,7 @@ export function ItemTracking() {
       <div className="bg-card text-card-foreground p-5 border rounded-lg shadow-sm space-y-4">
         <h2 className="text-base font-semibold flex items-center gap-2">
           <Activity className="text-primary" size={18} /> 
-          {selectedItemCode ? 'Sesuaikan Filter Pelacakan' : 'Pilih Part Number & Tanggal Pelacakan'}
+          {selectedPartNumber ? 'Sesuaikan Filter Pelacakan' : 'Pilih Part Number & Tanggal Pelacakan'}
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Item Selector */}
@@ -136,8 +136,8 @@ export function ItemTracking() {
             ) : (
               <SearchableSelect
                 options={itemOptions}
-                value={selectedItemCode}
-                onChange={setSelectedItemCode}
+                value={selectedPartNumber}
+                onChange={setSelectedPartNumber}
                 placeholder="Cari part number atau nama..."
               />
             )}
@@ -175,7 +175,7 @@ export function ItemTracking() {
       </div>
 
       {/* TRACKING RESULTS */}
-      {!selectedItemCode ? (
+      {!selectedPartNumber ? (
         // Placeholder empty state
         <div className="bg-card shadow-sm border rounded-lg p-12 text-center flex flex-col items-center justify-center space-y-4">
           <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center text-primary animate-pulse">
@@ -221,12 +221,12 @@ export function ItemTracking() {
             <div className="space-y-1">
               <div className="flex items-center gap-3">
                 <span className="bg-primary/10 text-primary font-mono text-sm px-2.5 py-0.5 rounded font-bold">
-                  {trackingData.item_code}
+                  {trackingData.part_number}
                 </span>
                 {getStatusBadge(trackingData.status)}
               </div>
               <h2 className="text-xl font-bold mt-1 text-card-foreground">
-                {trackingData.item_name}
+                {trackingData.description}
               </h2>
               <p className="text-xs text-muted-foreground font-medium">
                 Satuan Ukuran: <span className="text-foreground font-semibold uppercase">{selectedItemDetails?.unit || 'pcs'}</span> | 
