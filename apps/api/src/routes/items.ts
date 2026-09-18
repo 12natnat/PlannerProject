@@ -6,7 +6,7 @@ export default async function itemsRoutes(server: FastifyInstance) {
   // Get all items
   server.get('/api/v1/items', { preValidation: [authenticate] }, async (request, reply) => {
     const items = await prisma.item.findMany({
-      orderBy: { itemName: 'asc' },
+      orderBy: { description: 'asc' },
     });
     return reply.send({ data: items });
   });
@@ -24,10 +24,10 @@ export default async function itemsRoutes(server: FastifyInstance) {
     '/api/v1/master-cartons',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { cartonCode, toyNameItemId, partNumberCode } = request.body as any;
+      const { cartonCode, toyName, partNumberCode } = request.body as any;
 
-      if (!cartonCode || !toyNameItemId || !partNumberCode) {
-        return reply.code(400).send({ error: 'Bad Request', message: 'cartonCode, toyNameItemId, and partNumberCode are required' });
+      if (!cartonCode || !toyName || !partNumberCode) {
+        return reply.code(400).send({ error: 'Bad Request', message: 'cartonCode, toyName, and partNumberCode are required' });
       }
 
       const existingMc = await prisma.masterCarton.findUnique({ where: { cartonCode } });
@@ -36,7 +36,7 @@ export default async function itemsRoutes(server: FastifyInstance) {
       }
 
       const newMc = await prisma.masterCarton.create({
-        data: { cartonCode, toyNameItemId, partNumberCode },
+        data: { cartonCode, toyName, partNumberCode },
       });
 
       // Audit Log
@@ -60,7 +60,7 @@ export default async function itemsRoutes(server: FastifyInstance) {
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const { cartonCode, toyNameItemId, partNumberCode } = request.body as any;
+      const { cartonCode, toyName, partNumberCode } = request.body as any;
 
       const existingMc = await prisma.masterCarton.findUnique({ where: { id } });
       if (!existingMc) {
@@ -76,7 +76,7 @@ export default async function itemsRoutes(server: FastifyInstance) {
 
       const updatedMc = await prisma.masterCarton.update({
         where: { id },
-        data: { cartonCode, toyNameItemId, partNumberCode },
+        data: { cartonCode, toyName, partNumberCode },
       });
 
       // Audit Log
@@ -134,8 +134,8 @@ export default async function itemsRoutes(server: FastifyInstance) {
     const items = await prisma.item.findMany({
       where: {
         OR: [
-          { itemCode: { contains: q } },
-          { itemName: { contains: q } }
+          { partNumber: { contains: q } },
+          { description: { contains: q } }
         ]
       },
       take: 20,
@@ -160,19 +160,19 @@ export default async function itemsRoutes(server: FastifyInstance) {
     '/api/v1/items',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { itemCode, itemName, unit } = request.body as any;
+      const { partNumber, description, unit } = request.body as any;
 
-      if (!itemCode || !itemName || !unit) {
-        return reply.code(400).send({ error: 'Bad Request', message: 'itemCode, itemName, and unit are required' });
+      if (!partNumber || !description || !unit) {
+        return reply.code(400).send({ error: 'Bad Request', message: 'partNumber, description, and unit are required' });
       }
 
-      const existingItem = await prisma.item.findUnique({ where: { itemCode } });
+      const existingItem = await prisma.item.findUnique({ where: { partNumber } });
       if (existingItem) {
         return reply.code(409).send({ error: 'Conflict', message: 'Item code already exists' });
       }
 
       const newItem = await prisma.item.create({
-        data: { itemCode, itemName, unit },
+        data: { partNumber, description, unit },
       });
 
       // Audit Log
@@ -196,15 +196,15 @@ export default async function itemsRoutes(server: FastifyInstance) {
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const { itemCode, itemName, unit } = request.body as any;
+      const { partNumber, description, unit } = request.body as any;
 
       const existingItem = await prisma.item.findUnique({ where: { id } });
       if (!existingItem) {
         return reply.code(404).send({ error: 'Not Found', message: 'Item not found' });
       }
 
-      if (itemCode && itemCode !== existingItem.itemCode) {
-        const codeExists = await prisma.item.findUnique({ where: { itemCode } });
+      if (partNumber && partNumber !== existingItem.partNumber) {
+        const codeExists = await prisma.item.findUnique({ where: { partNumber } });
         if (codeExists) {
           return reply.code(409).send({ error: 'Conflict', message: 'Item code already exists' });
         }
@@ -212,7 +212,7 @@ export default async function itemsRoutes(server: FastifyInstance) {
 
       const updatedItem = await prisma.item.update({
         where: { id },
-        data: { itemCode, itemName, unit },
+        data: { partNumber, description, unit },
       });
 
       // Audit Log

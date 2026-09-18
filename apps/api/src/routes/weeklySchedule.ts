@@ -12,7 +12,15 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
     };
 
     const where: any = {};
-    if (year) where.year = parseInt(year);
+    if (year) {
+      where.year = parseInt(year);
+    } else {
+      // Default: show data starting from 14 days ago to keep queries fast
+      const cutoff = new Date();
+      cutoff.setUTCHours(0, 0, 0, 0);
+      cutoff.setDate(cutoff.getDate() - 14);
+      where.weekEndDate = { gte: cutoff };
+    }
     if (weekNumber) where.weekNumber = parseInt(weekNumber);
     if (itemId) where.itemId = itemId;
 
@@ -63,8 +71,8 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       if (!itemMap[s.itemId]) {
         itemMap[s.itemId] = {
           itemId: s.itemId,
-          itemCode: s.item.itemCode,
-          itemName: s.item.itemName,
+          partNumber: s.item.partNumber,
+          description: s.item.description,
           weeks: {},
           total: 0,
         };
@@ -86,22 +94,22 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
     '/api/v1/weekly-schedule',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { year, weekNumber, weekStartDate, weekEndDate, itemId, itemCode, description, quantity, saveMode } =
+      const { year, weekNumber, weekStartDate, weekEndDate, itemId, partNumber, description, quantity, saveMode } =
         request.body as any;
 
-      if (!year || !weekNumber || !quantity === undefined || (!itemId && !itemCode)) {
+      if (!year || !weekNumber || quantity === undefined || (!itemId && !partNumber)) {
         return reply.code(400).send({ error: 'Bad Request', message: 'Missing required fields' });
       }
 
       let finalItemId = itemId;
-      if (!finalItemId && itemCode) {
-        let item = await prisma.item.findUnique({ where: { itemCode } });
+      if (!finalItemId && partNumber) {
+        let item = await prisma.item.findUnique({ where: { partNumber } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: description || itemCode, unit: 'PCS' },
+            data: { partNumber, description: description || partNumber, unit: 'PCS' },
           });
-        } else if (description && item.itemName !== description) {
-          item = await prisma.item.update({ where: { id: item.id }, data: { itemName: description } });
+        } else if (description && item.description !== description) {
+          item = await prisma.item.update({ where: { id: item.id }, data: { description } });
         }
         finalItemId = item.id;
       }
@@ -160,45 +168,45 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
 
       // Filter valid records upfront
       const validRecords: any[] = records.filter(
-        (r: any) => r.year && r.weekNumber && r.itemCode && r.quantity !== undefined,
+        (r: any) => r.year && r.weekNumber && r.partNumber && r.quantity !== undefined,
       );
       if (validRecords.length === 0) {
         return reply.code(400).send({ error: 'Bad Request', message: 'No valid records' });
       }
 
       // ── Step 1: Batch-resolve items ──────────────────────────────────────────
-      const uniqueCodes = [...new Set(validRecords.map((r: any) => r.itemCode as string))];
+      const uniqueCodes = [...new Set(validRecords.map((r: any) => r.partNumber as string))];
 
       // Build description map (first occurrence wins)
-      const toyNameMap: Record<string, string> = {};
+      const descriptionMap: Record<string, string> = {};
       for (const r of validRecords) {
-        if (!toyNameMap[r.itemCode]) toyNameMap[r.itemCode] = r.description || r.itemCode;
+        if (!descriptionMap[r.partNumber]) descriptionMap[r.partNumber] = r.description || r.partNumber;
       }
 
       // Fetch all existing items in one query
-      const existingItems = await prisma.item.findMany({ where: { itemCode: { in: uniqueCodes } } });
-      const itemCodeToId: Record<string, string> = {};
-      for (const item of existingItems) itemCodeToId[item.itemCode] = item.id;
+      const existingItems = await prisma.item.findMany({ where: { partNumber: { in: uniqueCodes } } });
+      const partNumberToId: Record<string, string> = {};
+      for (const item of existingItems) partNumberToId[item.partNumber] = item.id;
 
       // Create missing items in one batch
-      const missingCodes = uniqueCodes.filter((code) => !itemCodeToId[code]);
+      const missingCodes = uniqueCodes.filter((code) => !partNumberToId[code]);
       if (missingCodes.length > 0) {
         await prisma.item.createMany({
-          data: missingCodes.map((code) => ({ itemCode: code, itemName: toyNameMap[code] || code, unit: 'PCS' })),
+          data: missingCodes.map((code) => ({ partNumber: code, description: descriptionMap[code] || code, unit: 'PCS' })),
           skipDuplicates: true,
         });
-        const newItems = await prisma.item.findMany({ where: { itemCode: { in: missingCodes } } });
-        for (const item of newItems) itemCodeToId[item.itemCode] = item.id;
+        const newItems = await prisma.item.findMany({ where: { partNumber: { in: missingCodes } } });
+        for (const item of newItems) partNumberToId[item.partNumber] = item.id;
       }
 
       // Update stale item names in parallel (only changed ones)
       const nameUpdates = existingItems.filter(
-        (item) => toyNameMap[item.itemCode] && item.itemName !== toyNameMap[item.itemCode],
+        (item) => descriptionMap[item.partNumber] && item.description !== descriptionMap[item.partNumber],
       );
       if (nameUpdates.length > 0) {
         await Promise.all(
           nameUpdates.map((item) =>
-            prisma.item.update({ where: { id: item.id }, data: { itemName: toyNameMap[item.itemCode] } }),
+            prisma.item.update({ where: { id: item.id }, data: { description: descriptionMap[item.partNumber] } }),
           ),
         );
       }
@@ -213,7 +221,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
           if (!scopeMap.has(key)) {
             scopeMap.set(key, { year, weekNumber, itemIds: new Set() });
           }
-          const itemId = itemCodeToId[r.itemCode];
+          const itemId = partNumberToId[r.partNumber];
           if (itemId) {
             scopeMap.get(key)!.itemIds.add(itemId);
           }
@@ -246,7 +254,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       const toUpdate: { id: string; quantity: number; weekStartDate: Date; weekEndDate: Date }[] = [];
 
       for (const r of validRecords) {
-        const itemId = itemCodeToId[r.itemCode];
+        const itemId = partNumberToId[r.partNumber];
         if (!itemId) continue;
         const startDate = r.weekStartDate ? new Date(r.weekStartDate) : new Date();
         const endDate = r.weekEndDate ? new Date(r.weekEndDate) : new Date(startDate.getTime() + 6 * 86400000);

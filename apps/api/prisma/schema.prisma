@@ -31,10 +31,11 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Relations
-  auditLogs     AuditLog[]
-  notifications Notification[]
-  fgStocks      FGStock[]
-  wips          WIP[]
+  auditLogs        AuditLog[]
+  notifications    Notification[]
+  fgStocks         FGStock[]
+  fgStockHistories FGStockHistory[]
+  wips             WIP[]
 
   @@index([email])
   @@index([role])
@@ -46,37 +47,31 @@ model User {
 // ============================================
 
 model Item {
-  id        String   @id @default(cuid())
-  itemCode  String   @unique
-  itemName  String
-  unit      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String         @id @default(cuid())
+  partNumber     String         @unique
+  description    String
+  unit           String
+  
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
-  // Relations
-  dailySchedules  DailySchedule[]
-  weeklySchedules WeeklySchedule[]
-  fgStocks        FGStock[]
-  wips            WIP[]
-  masterCartons   MasterCarton[]
+  wips                 WIP[]
+  fgStocks             FGStock[]
+  fgStockHistories     FGStockHistory[]
+  weeklySchedules      WeeklySchedule[]
+  dailySchedules       DailySchedule[]
 
-  @@index([itemCode])
-  @@index([itemName])
   @@map("items")
 }
 
 model MasterCarton {
   id             String   @id @default(cuid())
   cartonCode     String   @unique
-  toyNameItemId  String // Reference to Item (Toy Name)
-  partNumberCode String // Part number that belongs to this master carton
+  toyName        String
+  partNumberCode String
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  // Relations
-  toyNameItem Item @relation(fields: [toyNameItemId], references: [id], onDelete: Cascade)
-
-  @@index([toyNameItemId])
   @@index([partNumberCode])
   @@map("master_cartons")
 }
@@ -129,7 +124,7 @@ model WeeklySchedule {
 
 model FGStock {
   id        String    @id @default(cuid())
-  itemId    String    @unique // Unique karena hanya 1 record per item (overwrite)
+  itemId    String    // Unique constraint dipindah ke block @@unique
   quantity  Float
   date      DateTime  @db.Date
   shift     Int? // Optional
@@ -142,9 +137,31 @@ model FGStock {
   item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
   user User @relation(fields: [updatedBy], references: [id])
 
+  @@unique([itemId, date])
   @@index([itemId])
   @@index([date])
   @@map("fg_stocks")
+}
+
+model FGStockHistory {
+  id        String   @id @default(cuid())
+  itemId    String
+  inQty     Float    @default(0)
+  outQty    Float    @default(0)
+  balance   Float
+  type      String   // "ADD", "OVERWRITE"
+  date      DateTime @db.Date
+  notes     String?  @db.Text
+  createdBy String
+  createdAt DateTime @default(now())
+
+  // Relations
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [createdBy], references: [id])
+
+  @@index([itemId])
+  @@index([date])
+  @@map("fg_stock_history")
 }
 
 // ============================================
@@ -176,7 +193,7 @@ model WIP {
   item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
   user User @relation(fields: [updatedBy], references: [id])
 
-  @@unique([itemId, location]) // Unique per item + location (overwrite)
+  @@unique([itemId, location, date, shift]) // Unique per item + location + date + shift (historical)
   @@index([itemId])
   @@index([location])
   @@index([status])
