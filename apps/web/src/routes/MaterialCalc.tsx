@@ -1,41 +1,60 @@
 import { useMemo, useState } from 'react';
 import {
-  useCalculationHistory,
-  useCalculationHistoryDetail,
-  useDeleteCalculationHistory,
-  useMaterialCalc,
-  useMRPWeeks,
-  useSaveMaterialCalculation,
-  useUpdateCalculationHistory,
+  useCalculateCycle,
+  useCreateCycle,
+  useCycleAudit,
+  useCycleResultDetail,
+  useCycleResults,
+  useCycles,
+  useCycleRetentionAction,
+  useCycleSources,
+  useExpiredCycles,
+  useImportLiveIntoCycle,
+  useNpofCheck,
+  usePatchCycleResult,
+  type CycleAuditEntry,
+  type CycleCalculationResult,
+  type CycleSummary,
+  type ExpiredCycle,
   type MaterialGroup,
+  type MaterialCalcResponse,
   type PartNumberDetail,
+  type WeeklyMatrix,
 } from '../hooks/useMaterialCalc';
-import { printMaterialCalculation } from '../lib/exportPdf';
 import {
-  Calculator,
   AlertTriangle,
+  Bookmark,
+  Calculator,
   CheckCircle,
+  ChevronDown,
   ChevronRight,
-  Download,
-  Loader2,
-  Info,
-  Save,
+  Copy,
   Folder,
+  FolderOpen,
+  History,
+  Info,
+  Loader2,
+  Lock,
+  Plus,
+  RefreshCw,
+  Unlock,
   X,
-  Pencil,
-  Trash2,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { id as indonesianLocale } from 'date-fns/locale';
 
+// ── Format angka & tanggal ────────────────────────────────────────────────
+
 function formatNum(n: number | null | undefined, decimals = 2): string {
-  if (n === null || n === undefined) return '—';
+  if (n === null || n === undefined || Number.isNaN(n)) return '—';
   return n.toLocaleString('id-ID', { minimumFractionDigits: 0, maximumFractionDigits: decimals });
 }
 
 function formatMonth(month: string): string {
   const date = new Date(`${month}-01T00:00:00`);
-  return Number.isNaN(date.getTime()) ? 'Bulan tidak tersedia' : format(date, 'MMMM yyyy', { locale: indonesianLocale });
+  return Number.isNaN(date.getTime())
+    ? 'Bulan tidak tersedia'
+    : format(date, 'MMMM yyyy', { locale: indonesianLocale });
 }
 
 function formatWeekDate(date: string): string {
@@ -43,16 +62,156 @@ function formatWeekDate(date: string): string {
   return Number.isNaN(parsed.getTime()) ? '-' : format(parsed, 'dd MMM yyyy', { locale: indonesianLocale });
 }
 
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return '—';
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? '—' : format(parsed, 'dd MMM yyyy HH:mm', { locale: indonesianLocale });
+}
+
+/** Label pendek untuk kepala kolom minggu, mis. "19 Sep". */
+function formatDayMonth(value: string): string {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? '-' : format(parsed, 'dd MMM', { locale: indonesianLocale });
+}
+
+function getFallbackTimeline(leadTimeMonths: number) {
+  const purchaseDate = new Date();
+  const arrivalDate = new Date(purchaseDate);
+  arrivalDate.setMonth(arrivalDate.getMonth() + Math.max(0, leadTimeMonths - 1));
+  const usageDate = new Date(purchaseDate);
+  usageDate.setMonth(usageDate.getMonth() + leadTimeMonths);
+  const toMonth = (date: Date) => date.toISOString().slice(0, 7);
+  return {
+    purchaseMonth: toMonth(purchaseDate),
+    arrivalMonth: toMonth(arrivalDate),
+    usageMonth: toMonth(usageDate),
+  };
+}
+
+// ── Sel tabel mingguan: baris atas lembar, baris bawah kg ─────────────────
+
+function UnitCell({ sheet, kg, hasKg }: { sheet: number | undefined; kg: number | undefined; hasKg: boolean }) {
+  const sheets = sheet ?? 0;
+  const kilos = kg ?? 0;
+  const negative = sheets < 0 || kilos < 0;
+  return (
+    <td className={`px-2 py-1.5 text-right align-top tabular-nums ${negative ? 'text-red-600' : 'text-gray-700'}`}>
+      <div className="text-[11px] font-medium">{formatNum(sheets, 0)} lbr</div>
+      <div className="text-[10px] text-gray-400">{hasKg ? `${formatNum(kilos)} kg` : '—'}</div>
+    </td>
+  );
+}
+
+// ── Tabel mingguan 26 kolom (sesuai Gambar 3) ─────────────────────────────
+
+function WeeklyMatrixTable({ matrix }: { matrix: WeeklyMatrix }) {
+  const width = matrix.columns.length;
+  const { summary } = matrix;
+
+  /** Baris ringkasan yang mengikuti pola yang sama untuk semua bagian. */
+  const summaryRows: { label: string; sheet: number[]; kg: number[]; strong?: boolean }[] = [
+    { label: 'Total Req', sheet: summary.totalReqSheet, kg: summary.totalReq, strong: true },
+    { label: 'Allowance (5%)', sheet: summary.allowanceSheet, kg: summary.allowance },
+    { label: 'Total + Allowance', sheet: summary.totalPlusAllowanceSheet, kg: summary.totalPlusAllowance, strong: true },
+  ];
+
+  return (
+    <div className="overflow-x-auto border-t border-gray-200">
+      <table className="text-xs border-collapse">
+        <thead className="bg-gray-100 text-gray-600">
+          <tr>
+            <th className="px-3 py-2 text-left font-semibold sticky left-0 bg-gray-100 z-10 min-w-[150px]">
+              Part Number
+            </th>
+            <th className="px-3 py-2 text-left font-semibold min-w-[160px]">Deskripsi</th>
+            <th className="px-2 py-2 text-left font-semibold">GSM</th>
+            <th className="px-2 py-2 text-right font-semibold">Width</th>
+            <th className="px-2 py-2 text-right font-semibold">Length</th>
+            <th className="px-2 py-2 text-right font-semibold">Up</th>
+            <th className="px-2 py-2 text-right font-semibold">Kg/Lbr</th>
+            {matrix.columns.map((col) => (
+              <th key={col.weekNumber} className="px-2 py-2 text-right font-semibold min-w-[74px]">
+                <div className="text-[11px] text-indigo-600">{col.poMonthLabel}</div>
+                <div className="text-[10px] text-gray-400">{formatDayMonth(col.weekStartDate)}</div>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {matrix.rows.map((row) => (
+            <tr key={row.partNumber} className="hover:bg-gray-50">
+              <td className="px-3 py-1.5 font-medium text-gray-900 sticky left-0 bg-white z-10">{row.partNumber}</td>
+              <td className="px-3 py-1.5 text-gray-600">{row.productName}</td>
+              <td className="px-2 py-1.5 text-gray-700">{row.gsm}</td>
+              <td className="px-2 py-1.5 text-right text-gray-700">{row.width ?? '—'}</td>
+              <td className="px-2 py-1.5 text-right text-gray-700">{row.length ?? '—'}</td>
+              <td className="px-2 py-1.5 text-right text-gray-700">{formatNum(row.up, 0)}</td>
+              <td className="px-2 py-1.5 text-right text-gray-700">{row.hasKg ? formatNum(row.kgPerSheet, 4) : '—'}</td>
+              {Array.from({ length: width }).map((_, i) => (
+                <UnitCell key={i} sheet={row.weeksSheet[i]} kg={row.weeks[i]} hasKg={row.hasKg} />
+              ))}
+            </tr>
+          ))}
+
+          {summaryRows.map((r) => (
+            <tr key={r.label} className={r.strong ? 'bg-indigo-50/40 font-semibold' : 'bg-gray-50/60'}>
+              <td className="px-3 py-1.5 text-gray-700 sticky left-0 bg-inherit z-10" colSpan={7}>
+                {r.label}
+                {r.label === 'Total Req' && <span className="ml-2 text-[10px] font-normal text-amber-600">sebagian estimasi</span>}
+              </td>
+              {Array.from({ length: width }).map((_, i) => (
+                <UnitCell key={i} sheet={r.sheet[i]} kg={r.kg[i]} hasKg />
+              ))}
+            </tr>
+          ))}
+
+          <tr className="bg-gray-50/60">
+            <td className="px-3 py-1.5 text-gray-700 sticky left-0 bg-inherit z-10" colSpan={7}>
+              Stock As Of
+            </td>
+            <UnitCell sheet={summary.stockAsOfSheet} kg={summary.stockAsOf} hasKg />
+            {Array.from({ length: Math.max(0, width - 1) }).map((_, i) => (
+              <td key={i} className="px-2 py-1.5 text-right text-gray-300">
+                —
+              </td>
+            ))}
+          </tr>
+
+          <tr className="bg-gray-50/60">
+            <td className="px-3 py-1.5 text-gray-700 sticky left-0 bg-inherit z-10" colSpan={7}>
+              Outstanding PO
+            </td>
+            {Array.from({ length: width }).map((_, i) => (
+              <UnitCell key={i} sheet={summary.outstandingPoSheet[i]} kg={summary.outstandingPo[i]} hasKg />
+            ))}
+          </tr>
+
+          <tr className="bg-gray-100/70 font-semibold">
+            <td className="px-3 py-1.5 text-gray-800 sticky left-0 bg-inherit z-10" colSpan={7}>
+              End Ind
+            </td>
+            {Array.from({ length: width }).map((_, i) => (
+              <UnitCell key={i} sheet={summary.endIndSheet[i]} kg={summary.endInd[i]} hasKg />
+            ))}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Tabel rincian angka per part ──────────────────────────────────────────
+
 function DetailTable({ details }: { details: PartNumberDetail[] }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto border-t border-gray-200">
       <table className="w-full text-xs">
         <thead className="bg-gray-100 text-gray-600 uppercase">
           <tr>
             <th className="px-3 py-2 text-left font-semibold">Part Number</th>
-            <th className="px-3 py-2 text-left font-semibold">Nama Produk</th>
             <th className="px-3 py-2 text-right font-semibold">Demand (pcs)</th>
             <th className="px-3 py-2 text-right font-semibold">Keb. Bersih (kg)</th>
+            <th className="px-3 py-2 text-right font-semibold">Stok Teralokasi (kg)</th>
             <th className="px-3 py-2 text-right font-semibold">Sheet Beli</th>
             <th className="px-3 py-2 text-right font-semibold">Pcs Beli</th>
             <th className="px-3 py-2 text-right font-semibold">Kg Beli</th>
@@ -65,16 +224,16 @@ function DetailTable({ details }: { details: PartNumberDetail[] }) {
               <td className="px-3 py-2 font-medium text-gray-900">
                 <div className="flex items-center gap-1">
                   {d.noNpofData && (
-                    <span title="Belum ada data NPOF — estimasi berdasarkan default">
+                    <span title="Belum ada data NPOF — dihitung dengan estimasi jumbo roll 180 cm">
                       <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
                     </span>
                   )}
                   {d.partNumber}
                 </div>
               </td>
-              <td className="px-3 py-2 text-gray-600">{d.productName}</td>
               <td className="px-3 py-2 text-right text-gray-700">{formatNum(d.demandPcs, 0)}</td>
               <td className="px-3 py-2 text-right text-gray-700">{formatNum(d.kgNet2)}</td>
+              <td className="px-3 py-2 text-right text-gray-700">{formatNum(d.allocatedKg)}</td>
               {d.isSufficient ? (
                 <>
                   <td className="px-3 py-2 text-center text-gray-400">—</td>
@@ -107,325 +266,380 @@ function DetailTable({ details }: { details: PartNumberDetail[] }) {
   );
 }
 
-function formatSnapshotValue(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '-';
-  if (typeof value === 'object') return Array.isArray(value) ? `${value.length} item` : 'Detail tersedia';
-  return String(value);
-}
+// ── Baris grup: klik untuk membuka tabel mingguan ─────────────────────────
 
-function SnapshotTable({ data, sourceType }: { data: unknown; sourceType: string }) {
-  const rows = Array.isArray(data) ? data : [];
-  if (rows.length === 0) return <p className="p-4 text-sm text-gray-400">Tidak ada data pada snapshot ini.</p>;
-
-  const objectRows = rows.filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null);
-  const getValue = (row: Record<string, unknown>, key: string) => {
-    if (key === 'partNumber') return row.partNumber || (row.item as Record<string, unknown> | undefined)?.partNumber || '-';
-    if (key === 'itemName') return row.itemName || (row.item as Record<string, unknown> | undefined)?.itemName || '-';
-    return row[key];
-  };
-  const sourceColumns: Record<string, string[]> = {
-    HOTLIST: ['partNumber', 'date', 'biTotal', 'previousDate'],
-    MRP: ['partNumber', 'itemName', 'year', 'weekNumber', 'weekStartDate', 'weekEndDate', 'quantity'],
-    NPOF: ['partNumber', 'productName', 'material', 'gramatur', 'supplier', 'sheetedSize', 'formulaMaterial', 'ups'],
-    OutstandingPO: ['planReceivedDate', 'supplierName', 'itemDesc', 'qtyOrder', 'qtyOrderUnit', 'qtyDelivered', 'qtyDeliveredUnit'],
-    StockRawMaterial: ['itemDesc', 'supplier', 'date', 'qty', 'unit'],
-    WIP: ['partNumber', 'itemName', 'location', 'quantity', 'progressPercent', 'date', 'shift', 'status', 'notes'],
-  };
-  const columns = sourceColumns[sourceType] || Object.keys(objectRows[0]).filter((key) => !['id', 'createdAt', 'updatedAt', 'item'].includes(key)).slice(0, 12);
-  const labels: Record<string, string> = { partNumber: 'Part Number', itemName: 'Nama Produk', productName: 'Nama Produk', biTotal: 'BI Total', weekNumber: 'MRP Week', weekStartDate: 'Mulai', weekEndDate: 'Selesai', quantity: 'Qty Demand', planReceivedDate: 'Tanggal Rencana', supplierName: 'Supplier', itemDesc: 'Item Desc', qtyOrder: 'Qty Order', qtyOrderUnit: 'Unit Order', qtyDelivered: 'Qty Delivered', qtyDeliveredUnit: 'Unit Delivered', sheetedSize: 'Ukuran Material', formulaMaterial: 'Formula Material', progressPercent: 'Progress', location: 'Lokasi', notes: 'Catatan', date: 'Tanggal', previousDate: 'Tanggal Sebelumnya', gramatur: 'Gramatur', material: 'Material', supplier: 'Supplier', ups: 'UPS', qty: 'Qty', unit: 'Unit', year: 'Tahun', shift: 'Shift', status: 'Status' };
-
-  return (
-    <div className="overflow-x-auto max-h-72">
-      <table className="w-full text-xs text-left">
-        <thead className="sticky top-0 bg-gray-100 text-gray-600 uppercase">
-          <tr>{columns.map((column) => <th key={column} className="px-3 py-2 whitespace-nowrap font-semibold">{labels[column] || column}</th>)}</tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100">
-          {objectRows.map((row, index) => (
-            <tr key={index} className="hover:bg-gray-50">
-              {columns.map((column) => <td key={column} className="px-3 py-2 whitespace-nowrap text-gray-700">{formatSnapshotValue(getValue(row, column))}</td>)}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function HistoryResultTable({ snapshot }: { snapshot: unknown }) {
-  const result = snapshot as { groups?: MaterialGroup[] } | null;
-  const groups = result?.groups || [];
-  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
-  if (groups.length === 0) return <p className="p-4 text-sm text-gray-400">Tidak ada hasil kalkulasi.</p>;
-
-  const hasMatrix = groups.some((group) => group.weeklyMatrix);
-  if (hasMatrix) {
-    return (
-      <div className="space-y-4">
-        {groups.map((group, index) => (
-          <div key={index} className="border rounded-lg overflow-hidden">
-            <div className="px-3 py-2 border-b border-gray-200 bg-gray-50 flex flex-wrap items-center gap-x-4 gap-y-1">
-              <span className="font-semibold text-gray-800">{group.ukuran}</span>
-              <span className="text-xs text-gray-600">Gramatur: {group.gramatur || '—'}</span>
-              <span className="text-xs text-gray-600">Supplier: {group.supplier}</span>
-              <span className="text-xs text-gray-600">Lead Time: {group.leadTimeMonths} bln</span>
-            </div>
-            <WeeklyMatrixTable group={group} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm text-left">
-        <thead className="bg-gray-100 text-gray-600 uppercase text-xs">
-          <tr>
-            <th className="px-3 py-2">Ukuran Material</th><th className="px-3 py-2">Gramatur</th><th className="px-3 py-2">Supplier</th>
-            <th className="px-3 py-2 text-center">Lead Time</th><th className="px-3 py-2 text-right">Sheet Beli</th>
-            <th className="px-3 py-2 text-right">Kg Beli</th><th className="px-3 py-2">Status</th><th className="px-3 py-2 text-center">Detail</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100">
-          {groups.map((group, index) => (
-            <tr key={index} className="hover:bg-gray-50 cursor-pointer" onClick={() => setExpandedGroups((current) => { const next = new Set(current); if (next.has(index)) next.delete(index); else next.add(index); return next; })}>
-              <td className="px-3 py-2 font-medium"><span className="inline-block w-5 text-gray-400">{expandedGroups.has(index) ? '⌄' : '›'}</span>{group.ukuran}</td><td className="px-3 py-2">{group.gramatur || '-'}</td><td className="px-3 py-2">{group.supplier}</td>
-              <td className="px-3 py-2 text-center">{group.leadTimeMonths} bln</td>
-              <td className="px-3 py-2 text-right font-semibold text-red-600">{formatNum(group.totalShortageSheet, 0)}</td>
-              <td className="px-3 py-2 text-right font-semibold text-red-600">{formatNum(group.totalShortageKg)}</td>
-              <td className="px-3 py-2">{group.isSufficient ? `Tercukupi, sisa ${formatNum(group.surplusKg)} kg` : `Kurang ${formatNum(group.totalShortageKg)} kg`}</td>
-              <td className="px-3 py-2 text-center">{group.details?.length || 0} part</td>
-            </tr>
-          )).flatMap((row, index) => expandedGroups.has(index) ? [row, <tr key={`detail-${index}`}><td colSpan={8} className="bg-gray-50 p-3"><DetailTable details={groups[index].details || []} /></td></tr>] : [row])}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function formatWeekLabel(date: string): string {
-  const parsed = new Date(date);
-  return Number.isNaN(parsed.getTime()) ? '-' : format(parsed, 'M/d');
-}
-
-function WeeklyMatrixTable({ group }: { group: MaterialGroup }) {
-  const matrix = group.weeklyMatrix;
-  if (!matrix || !matrix.columns.length) {
-    return <p className="p-4 text-sm text-gray-400">Tidak ada data per minggu untuk hasil ini.</p>;
-  }
-  const { columns, rows, summary } = matrix;
-
-  const poGroups: { label: string; start: number; span: number }[] = [];
-  columns.forEach((col, i) => {
-    const last = poGroups[poGroups.length - 1];
-    if (last && last.label === col.poMonthLabel) {
-      last.span += 1;
-    } else {
-      poGroups.push({ label: col.poMonthLabel, start: i, span: 1 });
-    }
-  });
-
-  const cellClass = (v: number) => {
-    if (v === 0) return 'text-gray-400';
-    return v < 0 ? 'text-red-600 font-semibold' : 'text-green-700 font-semibold';
-  };
-
-  const summaryRow = (label: string, values: number[], extra?: string) => (
-    <tr className="border-t border-gray-300 bg-gray-50/70">
-      <td colSpan={7} className="px-3 py-2 font-semibold text-gray-700 whitespace-nowrap">
-        {label}
-        {extra ? <span className="text-gray-500 font-normal"> {extra}</span> : null}
-      </td>
-      {values.map((v, i) => (
-        <td key={i} className={`px-3 py-2 text-right whitespace-nowrap ${cellClass(v)}`}>
-          {formatNum(v)}
-        </td>
-      ))}
-    </tr>
-  );
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs border-collapse">
-        <thead>
-          <tr className="bg-gray-100 text-gray-600 uppercase">
-            <th rowSpan={2} className="px-3 py-2 text-left font-semibold border border-gray-200">Part Number</th>
-            <th rowSpan={2} className="px-3 py-2 text-left font-semibold border border-gray-200">Description</th>
-            <th rowSpan={2} className="px-3 py-2 text-left font-semibold border border-gray-200">GSM</th>
-            <th rowSpan={2} className="px-3 py-2 text-right font-semibold border border-gray-200">Width</th>
-            <th rowSpan={2} className="px-3 py-2 text-right font-semibold border border-gray-200">Length</th>
-            <th rowSpan={2} className="px-3 py-2 text-right font-semibold border border-gray-200">Up</th>
-            <th rowSpan={2} className="px-3 py-2 text-right font-semibold border border-gray-200">Kg</th>
-            {poGroups.map((po) => (
-              <th key={`${po.label}-${po.start}`} colSpan={po.span} className="px-3 py-2 text-center font-semibold border border-gray-200 bg-indigo-50 text-indigo-700">
-                {po.label}
-              </th>
-            ))}
-          </tr>
-          <tr className="bg-gray-100 text-gray-600">
-            {columns.map((col) => (
-              <th key={col.weekStartDate} className="px-2 py-1.5 text-center font-semibold border border-gray-200">
-                {formatWeekLabel(col.weekStartDate)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100">
-          {rows.map((row) => (
-            <tr key={row.partNumber} className="hover:bg-gray-50">
-              <td className="px-3 py-1.5 font-medium text-gray-900 whitespace-nowrap border border-gray-100">{row.partNumber}</td>
-              <td className="px-3 py-1.5 text-gray-600 whitespace-nowrap border border-gray-100">{row.productName}</td>
-              <td className="px-3 py-1.5 text-gray-700 border border-gray-100">{row.gsm}</td>
-              <td className="px-3 py-1.5 text-right text-gray-700 border border-gray-100">{row.width}</td>
-              <td className="px-3 py-1.5 text-right text-gray-700 border border-gray-100">{row.length}</td>
-              <td className="px-3 py-1.5 text-right text-gray-700 border border-gray-100">{row.up}</td>
-              <td className="px-3 py-1.5 text-right text-gray-700 border border-gray-100">{formatNum(row.kgPerSheet, 4)}</td>
-              {row.weeks.map((v, i) => (
-                <td key={i} className={`px-3 py-1.5 text-right whitespace-nowrap border border-gray-100 ${cellClass(v)}`}>
-                  {formatNum(v)}
-                </td>
-              ))}
-            </tr>
-          ))}
-
-          {summaryRow('Total Req', summary.totalReq)}
-          {summaryRow('Allowance', summary.allowance, '5%')}
-          {summaryRow('Total + Allowance', summary.totalPlusAllowance)}
-          <tr className="border-t border-gray-300 bg-gray-50/70">
-            <td colSpan={7} className="px-3 py-2 font-semibold text-gray-700 whitespace-nowrap">Stock As Of</td>
-            {columns.map((_, i) => (
-              <td key={i} className={`px-3 py-2 text-right whitespace-nowrap ${i === 0 ? 'text-gray-700 font-semibold' : 'text-gray-400'}`}>
-                {i === 0 ? formatNum(summary.stockAsOf) : '—'}
-              </td>
-            ))}
-          </tr>
-          {summaryRow('Outstanding PO', summary.outstandingPo)}
-          {summaryRow('End Ind', summary.endInd)}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function GroupMatrixCard({ group }: { group: MaterialGroup }) {
+function GroupRow({ group }: { group: MaterialGroup }) {
   const [expanded, setExpanded] = useState(false);
+  const [tab, setTab] = useState<'matrix' | 'detail'>('matrix');
+  const planningTimeline = group.planningTimeline || getFallbackTimeline(group.leadTimeMonths);
+  const estimatedInGroup = group.details.filter((d) => d.noNpofData).length;
 
   return (
-    <div className="card overflow-hidden">
-      <button
-        type="button"
+    <>
+      <tr
+        className={`cursor-pointer hover:bg-gray-50 transition-colors border-b border-gray-200 ${
+          expanded ? 'bg-indigo-50/30' : ''
+        }`}
         onClick={() => setExpanded((v) => !v)}
-        className="w-full px-4 py-3 border-b border-gray-200 bg-gray-50/70 hover:bg-gray-100 transition-colors flex flex-wrap items-center gap-x-5 gap-y-1 text-left"
       >
-        <ChevronRight
-          className={`w-4 h-4 text-gray-400 transition-transform flex-shrink-0 ${
-            expanded ? 'rotate-90' : ''
-          }`}
-        />
-        <span className="font-semibold text-gray-900">{group.ukuran}</span>
-        <span className="text-sm text-gray-600">Gramatur: {group.gramatur || '—'}</span>
-        <span className="text-sm text-gray-600">Supplier: {group.supplier}</span>
-        <span className="text-sm text-gray-600">Lead Time: {group.leadTimeMonths} bln</span>
-        <span className="text-sm text-gray-600">{group.details.length} part</span>
+        <td className="px-4 py-3 text-gray-400">
+          {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </td>
+        <td className="px-4 py-3 font-medium text-gray-900">
+          <div>{group.ukuran}</div>
+          {estimatedInGroup > 0 && (
+            <div className="text-[11px] font-normal text-amber-600">
+              ⚠️ {formatNum(estimatedInGroup, 0)} dari {formatNum(group.details.length, 0)} part datanya belum lengkap (estimasi)
+            </div>
+          )}
+        </td>
+        <td className="px-4 py-3 text-gray-700">{group.gramatur || '—'}</td>
+        <td className="px-4 py-3 text-gray-700">{group.supplier}</td>
+        <td className="px-4 py-3 text-center">
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+            {group.leadTimeMonths} bln
+          </span>
+        </td>
+        <td className="px-4 py-3 text-xs text-gray-600">
+          <div>
+            Beli: <span className="font-medium text-gray-800">{formatMonth(planningTimeline.purchaseMonth)}</span>
+          </div>
+          <div>
+            Tiba: <span className="font-medium text-gray-800">{formatMonth(planningTimeline.arrivalMonth)}</span>
+          </div>
+          <div>
+            Pakai: <span className="font-medium text-gray-800">{formatMonth(planningTimeline.usageMonth)}</span>
+          </div>
+        </td>
         {group.isSufficient ? (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
-            <CheckCircle className="w-3.5 h-3.5" />
-            Tercukupi, sisa {formatNum(group.surplusKg)} kg
-          </span>
+          <>
+            <td className="px-4 py-3 text-center text-gray-400">—</td>
+            <td className="px-4 py-3 text-center text-gray-400">—</td>
+            <td className="px-4 py-3">
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                <CheckCircle className="w-3.5 h-3.5" />
+                Tercukupi, sisa {formatNum(group.surplusKg)} kg
+              </span>
+            </td>
+          </>
         ) : (
-          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700">
-            ⚠️ Kurang {formatNum(group.totalShortageKg)} kg
-          </span>
+          <>
+            <td className="px-4 py-3 text-right font-bold text-red-600">
+              {formatNum(group.totalShortageSheet, 0)} lbr
+            </td>
+            <td className="px-4 py-3 text-right font-bold text-red-600">{formatNum(group.totalShortageKg)} kg</td>
+            <td className="px-4 py-3">
+              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700">
+                ⚠️ Kurang {formatNum(group.totalShortageKg)} kg
+              </span>
+            </td>
+          </>
         )}
-        <span className="ml-auto text-xs text-indigo-600 font-medium">
-          {expanded ? 'Sembunyikan detail' : 'Lihat detail'}
-        </span>
-      </button>
-      {expanded && <WeeklyMatrixTable group={group} />}
+        <td className="px-4 py-3 text-center text-gray-500 text-sm">{group.details.length} part</td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={10} className="p-0 bg-gray-50/80">
+            <div className="px-4 pt-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setTab('matrix')}
+                className={`px-3 py-1.5 text-xs rounded-md ${
+                  tab === 'matrix' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-700'
+                }`}
+              >
+                Tabel 26 Minggu
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab('detail')}
+                className={`px-3 py-1.5 text-xs rounded-md ${
+                  tab === 'detail' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-700'
+                }`}
+              >
+                Rincian per Part
+              </button>
+              <span className="text-[11px] text-gray-500">
+                Setiap kolom: baris atas = lembar, baris bawah = kg
+              </span>
+            </div>
+            {tab === 'matrix' ? <WeeklyMatrixTable matrix={group.weeklyMatrix} /> : <DetailTable details={group.details} />}
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+// ── Folder card per jenis material ───────────────────────────────────────
+
+/** Warna & emoji per jenis material. */
+const MATERIAL_TYPE_META: Record<string, { emoji: string; color: string; iconColor: string; bg: string; selectedBg: string; border: string; selectedBorder: string }> = {
+  Paper:   { emoji: '📄', color: 'text-blue-800',  iconColor: 'text-blue-500',  bg: 'bg-white',      selectedBg: 'bg-blue-50',   border: 'border-gray-200', selectedBorder: 'border-blue-400' },
+  PET:     { emoji: '🧴', color: 'text-teal-800',  iconColor: 'text-teal-500',  bg: 'bg-white',      selectedBg: 'bg-teal-50',   border: 'border-gray-200', selectedBorder: 'border-teal-400' },
+  Flute:   { emoji: '📦', color: 'text-amber-800', iconColor: 'text-amber-500', bg: 'bg-white',      selectedBg: 'bg-amber-50',  border: 'border-gray-200', selectedBorder: 'border-amber-400' },
+  Lainnya: { emoji: '🗂️', color: 'text-gray-700',  iconColor: 'text-gray-400',  bg: 'bg-white',      selectedBg: 'bg-gray-100',  border: 'border-gray-200', selectedBorder: 'border-gray-400' },
+};
+
+function getMeta(materialType: string) {
+  return MATERIAL_TYPE_META[materialType] ?? MATERIAL_TYPE_META['Lainnya'];
+}
+
+/** Satu kartu folder material — klik untuk memilih / deselect. */
+function MaterialFolderCard({
+  materialType,
+  groups,
+  isSelected,
+  onClick,
+}: {
+  materialType: string;
+  groups: MaterialGroup[];
+  isSelected: boolean;
+  onClick: () => void;
+}) {
+  const meta = getMeta(materialType);
+  const shortageCount   = groups.filter((g) => !g.isSufficient).length;
+  const sufficientCount = groups.filter((g) =>  g.isSufficient).length;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`
+        w-full text-left rounded-xl border-2 p-4 transition-all duration-150
+        hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-300
+        ${isSelected
+          ? `${meta.selectedBg} ${meta.selectedBorder} shadow-sm`
+          : `${meta.bg} ${meta.border} hover:border-gray-300`}
+      `}
+    >
+      <div className="flex items-start gap-3">
+        <div className={`mt-0.5 ${meta.iconColor}`}>
+          {isSelected
+            ? <FolderOpen className="w-7 h-7" />
+            : <Folder     className="w-7 h-7" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className={`font-semibold text-sm ${meta.color}`}>
+            {materialType}
+          </div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            {groups.length} ukuran
+          </div>
+          <div className="flex flex-wrap gap-1 mt-2">
+            {shortageCount > 0 && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-red-100 text-red-700">
+                ⚠️ {shortageCount} kurang
+              </span>
+            )}
+            {sufficientCount > 0 && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-green-100 text-green-700">
+                ✅ {sufficientCount} cukup
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+// ── Dialog konfirmasi sederhana ───────────────────────────────────────────
+
+function ConfirmDialog({
+  title,
+  lines,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+  busy,
+}: {
+  title: string;
+  lines: string[];
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+        <div className="border-b px-6 py-4 font-semibold text-gray-900">{title}</div>
+        <div className="px-6 py-4 space-y-2 text-sm text-gray-700">
+          {lines.map((line, i) => (
+            <p key={i}>{line}</p>
+          ))}
+        </div>
+        <div className="border-t px-6 py-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="px-4 py-2 text-sm rounded-md border text-gray-700">
+            Batal
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className="px-4 py-2 text-sm rounded-md bg-indigo-600 text-white disabled:opacity-50"
+          >
+            {busy ? 'Memproses...' : confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
+
+// ── Halaman utama ─────────────────────────────────────────────────────────
+
+const SOURCE_LABELS: Record<string, string> = {
+  MRP: 'MRP 26 weeks',
+  HOTLIST: 'Hot List',
+  STOCK_RM: 'Stock Raw Material',
+  OUTSTANDING_PO: 'Outstanding PO',
+  WIP: 'WIP',
+};
 
 export function MaterialCalc() {
-  const { data: mrpWeeksData, isLoading: isLoadingWeeks } = useMRPWeeks();
-  const { data: historyData } = useCalculationHistory();
-  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
-  const [selectedHistoryFolder, setSelectedHistoryFolder] = useState<string | null>(null);
-  const { data: selectedHistoryData, isLoading: isLoadingHistoryDetail } = useCalculationHistoryDetail(selectedHistoryId);
-  const saveCalculation = useSaveMaterialCalculation();
-  const updateHistory = useUpdateCalculationHistory();
-  const deleteHistory = useDeleteCalculationHistory();
-  const mrpWeeks = mrpWeeksData?.data || [];
-  const mrpMonths = useMemo(() => {
-    const monthMap = new Map<string, { key: string; label: string; startDate: string; endDate: string; firstWeek: number; lastWeek: number }>();
-    for (const week of mrpWeeks) {
-      const monthKey = week.weekStartDate.slice(0, 7);
-      const existing = monthMap.get(monthKey);
-      if (!existing) {
-        monthMap.set(monthKey, {
-          key: monthKey,
-          label: formatMonth(monthKey),
-          startDate: week.weekStartDate.slice(0, 10),
-          endDate: week.weekEndDate.slice(0, 10),
-          firstWeek: week.weekNumber,
-          lastWeek: week.weekNumber,
-        });
-      } else {
-        existing.endDate = week.weekEndDate.slice(0, 10);
-        existing.lastWeek = week.weekNumber;
-      }
-    }
-    return [...monthMap.values()];
-  }, [mrpWeeks]);
-  const [selectedMonth, setSelectedMonth] = useState('');
-  const [triggerCalc, setTriggerCalc] = useState(false);
-  const [hasCalculated, setHasCalculated] = useState(false);
+  const { data: cyclesData, isLoading: isLoadingCycles } = useCycles();
+  const cycles = cyclesData?.data ?? [];
 
-  const activeMonth = mrpMonths.find((month) => month.key === selectedMonth) || mrpMonths[0];
-  const selectedStartDate = activeMonth?.startDate || '';
-  const selectedEndDate = activeMonth?.endDate || '';
-  const { data, isLoading, isError, error } = useMaterialCalc(selectedStartDate, selectedEndDate, triggerCalc && Boolean(selectedStartDate && selectedEndDate));
+  const [selectedCycleId, setSelectedCycleId] = useState('');
+  const activeCycle: CycleSummary | undefined = useMemo(
+    () => cycles.find((c) => c.id === selectedCycleId) ?? cycles[0],
+    [cycles, selectedCycleId],
+  );
+  const cycleId = activeCycle?.id ?? null;
+
+  const { data: sourcesData } = useCycleSources(cycleId);
+  const { data: resultsData } = useCycleResults(cycleId);
+  const { data: npofCheck } = useNpofCheck(cycleId, Boolean(activeCycle?.currentResult));
+  const { data: expiredData } = useExpiredCycles();
+
+  const createCycle = useCreateCycle();
+  const importLive = useImportLiveIntoCycle();
+  const calculate = useCalculateCycle();
+  const patchResult = usePatchCycleResult();
+  const retention = useCycleRetentionAction();
+
+  const [calcResult, setCalcResult] = useState<CycleCalculationResult | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  // Kalau user belum memilih run tertentu, tampilkan run yang sedang aktif
+  // supaya hasil terakhir langsung terlihat begitu halaman dibuka.
+  const { data: runDetail } = useCycleResultDetail(
+    cycleId,
+    selectedRunId ?? activeCycle?.currentResult?.id ?? null,
+  );
+
+  const [showAudit, setShowAudit] = useState(false);
+  const [showNewPeriod, setShowNewPeriod] = useState(false);
+  const [newMonth, setNewMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [newLabel, setNewLabel] = useState('');
+  const [confirmNpof, setConfirmNpof] = useState(false);
+  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [retentionTarget, setRetentionTarget] = useState<ExpiredCycle | null>(null);
+  const [retentionMonths, setRetentionMonths] = useState(6);
+  /** null = tampilkan semua tipe, string = filter ke tipe tertentu */
+  const [selectedMaterialType, setSelectedMaterialType] = useState<string | null>(null);
+  /** apakah panel Kelengkapan Data ditampilkan */
+  const [showSources, setShowSources] = useState(false);
+
+
+  const { data: auditData } = useCycleAudit(cycleId, showAudit);
+
+  const shown: CycleCalculationResult | MaterialCalcResponse | null =
+    runDetail?.data.resultSnapshot ?? calcResult;
+
+  const groups = shown?.groups ?? [];
+  const shortageGroups = groups.filter((g) => !g.isSufficient).length;
+  const sufficientGroups = groups.filter((g) => g.isSufficient).length;
+  const coverage = shown?.totals;
+
+  /** Kelompokkan groups per materialType, dengan urutan tampilan yang konsisten. */
+  const MATERIAL_ORDER = ['Paper', 'PET', 'Flute', 'Lainnya'];
+  const groupedByType = useMemo(() => {
+    const map = new Map<string, MaterialGroup[]>();
+    for (const g of groups) {
+      const type = g.materialType || 'Lainnya';
+      if (!map.has(type)) map.set(type, []);
+      map.get(type)!.push(g);
+    }
+    // Urutkan: tipe yang ada di MATERIAL_ORDER dulu, sisanya diurutkan alfabet
+    const knownOrder = MATERIAL_ORDER.filter((t) => map.has(t));
+    const unknown    = [...map.keys()].filter((t) => !MATERIAL_ORDER.includes(t)).sort();
+    return [...knownOrder, ...unknown].map((type) => ({ type, groups: map.get(type)! }));
+  }, [groups]);
+
+  /** Groups yang ditampilkan di tabel — difilter sesuai kartu yang dipilih */
+  const displayedGroups = useMemo(
+    () => selectedMaterialType ? groups.filter((g) => (g.materialType || 'Lainnya') === selectedMaterialType) : groups,
+    [groups, selectedMaterialType],
+  );
+
+  const statusBadge = (() => {
+    if (!activeCycle) return null;
+    if (activeCycle.isLocked) {
+      return <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-gray-200 text-gray-700">🔒 Terkunci</span>;
+    }
+    if (activeCycle.derivedStatus === 'NOT_CALCULATED') {
+      return <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700">🔵 Belum dihitung</span>;
+    }
+    if (activeCycle.derivedStatus === 'STALE') {
+      return <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700">🟠 Perlu dihitung ulang</span>;
+    }
+    return <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">🟢 Sudah dihitung</span>;
+  })();
+
+  const doCalculate = async () => {
+    if (!cycleId) return;
+    try {
+      const res = await calculate.mutateAsync({ cycleId });
+      setCalcResult(res.data);
+      setSelectedRunId(res.data.id);
+      setConfirmNpof(false);
+      setToast({ kind: 'ok', text: `Perhitungan run #${res.data.runNumber} selesai.` });
+    } catch (e) {
+      setToast({ kind: 'err', text: e instanceof Error ? e.message : 'Gagal menghitung' });
+    }
+  };
 
   const handleCalculate = () => {
-    setTriggerCalc(true);
-    setHasCalculated(true);
+    if (npofCheck?.data.changedSinceCalculation) {
+      setConfirmNpof(true);
+      return;
+    }
+    void doCalculate();
   };
 
-  const handleSave = async () => {
-    if (!data) return;
+  const handleCopyLive = async () => {
+    if (!cycleId) return;
     try {
-      await saveCalculation.mutateAsync(data);
-      alert('Hasil kalkulasi dan snapshot data berhasil disimpan ke history bulanan.');
-    } catch (saveError) {
-      alert(saveError instanceof Error ? saveError.message : 'Gagal menyimpan history kalkulasi');
+      const res = (await importLive.mutateAsync({ cycleId, sources: ['ALL'] })) as {
+        data: { source: string; inserted: number }[];
+      };
+      const total = res.data.reduce((s, r) => s + r.inserted, 0);
+      setToast({ kind: 'ok', text: `Data Master Data disalin: ${formatNum(total, 0)} baris masuk ke periode ini.` });
+    } catch (e) {
+      setToast({ kind: 'err', text: e instanceof Error ? e.message : 'Gagal menyalin data' });
     }
   };
 
-  const handleEditHistory = async (history: { id: string; periodStartDate: string; periodEndDate: string }) => {
-    const start = window.prompt('Tanggal mulai periode (YYYY-MM-DD):', history.periodStartDate.slice(0, 10));
-    if (!start) return;
-    const end = window.prompt('Tanggal akhir periode (YYYY-MM-DD):', history.periodEndDate.slice(0, 10));
-    if (!end) return;
+  const handleCreatePeriod = async () => {
     try {
-      await updateHistory.mutateAsync({ id: history.id, periodStartDate: start, periodEndDate: end });
-    } catch (editError) {
-      alert(editError instanceof Error ? editError.message : 'Gagal mengubah history');
+      const res = (await createCycle.mutateAsync({ uploadMonth: newMonth, label: newLabel || undefined })) as {
+        data: CycleSummary;
+      };
+      setShowNewPeriod(false);
+      setNewLabel('');
+      setSelectedCycleId(res.data.id);
+      setCalcResult(null);
+      setSelectedRunId(null);
+      setToast({ kind: 'ok', text: `Periode "${res.data.label}" dibuat. Sekarang isi datanya.` });
+    } catch (e) {
+      setToast({ kind: 'err', text: e instanceof Error ? e.message : 'Gagal membuat periode' });
     }
   };
 
-  const handleDeleteHistory = async (id: string) => {
-    if (!window.confirm('Hapus folder history ini beserta seluruh snapshot datanya?')) return;
-    try {
-      if (selectedHistoryId === id) setSelectedHistoryId(null);
-      await deleteHistory.mutateAsync(id);
-    } catch (deleteError) {
-      alert(deleteError instanceof Error ? deleteError.message : 'Gagal menghapus history');
-    }
-  };
-
-  const totalShortageGroups = data?.groups.filter((g) => !g.isSufficient).length || 0;
-  const totalSufficientGroups = data?.groups.filter((g) => g.isSufficient).length || 0;
+  const runs = resultsData?.data ?? [];
+  const expired = expiredData?.data ?? [];
 
   return (
     <div className="p-6 max-w-[1600px] mx-auto space-y-6">
@@ -437,187 +651,564 @@ export function MaterialCalc() {
             Material Calculation
           </h1>
           <p className="text-gray-500 mt-1">
-            Hitung kebutuhan raw material untuk produksi berdasarkan MRP 26-Week Demand
+            Perhitungan per periode, mencakup MRP penuh. Setiap periode terisolasi dari periode lain.
           </p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-gray-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-          <Info className="w-4 h-4 text-amber-500 flex-shrink-0" />
-          Perhitungan dijalankan 1x per bulan, di akhir bulan
-        </div>
-      </div>
-
-      {/* Controls */}
-      <div className="card p-4">
-        <div className="flex flex-col sm:flex-row items-start sm:items-end gap-4">
-          <div className="w-full sm:w-auto">
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Periode Demand (Bulan MRP)
-            </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={activeMonth?.key || ''}
-                disabled={isLoadingWeeks || mrpWeeks.length === 0}
-                onChange={(e) => { setSelectedMonth(e.target.value); setTriggerCalc(false); }}
-                className="input min-w-80"
-              >
-                {mrpMonths.map((month) => (
-                  <option key={month.key} value={month.key}>
-                    {month.label} (MRP W{month.firstWeek}-W{month.lastWeek})
-                  </option>
-                ))}
-              </select>
-              {activeMonth && (
-                <span className="text-sm text-gray-500">
-                  {formatWeekDate(activeMonth.startDate)} - {formatWeekDate(activeMonth.endDate)}
-                </span>
-              )}
-            </div>
-          </div>
-
+        <div className="flex items-center gap-2">
+          {statusBadge}
           <button
-            onClick={handleCalculate}
-            disabled={isLoading || isLoadingWeeks || !selectedStartDate || !selectedEndDate}
-            className="btn btn-primary"
+            type="button"
+            onClick={() => setShowAudit(true)}
+            disabled={!cycleId}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs rounded-md border text-gray-700 disabled:opacity-40"
           >
-            {isLoading ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              <Calculator className="w-4 h-4 mr-2" />
-            )}
-            {isLoading ? 'Menghitung...' : 'Hitung Sekarang'}
+            <History className="w-4 h-4" />
+            Riwayat Perubahan
           </button>
         </div>
       </div>
 
-      {/* Result */}
-      {isError && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">
-          <strong>Gagal menghitung:</strong> {(error as Error)?.message}
+      {toast && (
+        <div
+          className={`rounded-lg px-4 py-3 text-sm ${
+            toast.kind === 'ok'
+              ? 'bg-green-50 border border-green-200 text-green-800'
+              : 'bg-red-50 border border-red-200 text-red-700'
+          }`}
+        >
+          {toast.text}
         </div>
       )}
 
-      {hasCalculated && data && !isLoading && (
+      {/* Pemilih periode */}
+      <div className="card p-4">
+        <div className="flex flex-col lg:flex-row items-start lg:items-end gap-4">
+          <div className="w-full lg:w-auto">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Periode</label>
+            <select
+              value={activeCycle?.id ?? ''}
+              disabled={isLoadingCycles || cycles.length === 0}
+              onChange={(e) => {
+                setSelectedCycleId(e.target.value);
+                setCalcResult(null);
+                setSelectedRunId(null);
+              }}
+              className="input min-w-72"
+            >
+              {cycles.length === 0 && <option value="">Belum ada periode</option>}
+              {cycles.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowNewPeriod(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border text-gray-700 hover:bg-gray-50"
+          >
+            <Plus className="w-4 h-4" />
+            Buat Periode Baru
+          </button>
+
+          <div className="flex-1" />
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleCopyLive}
+              disabled={!cycleId || importLive.isPending}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+            >
+              {importLive.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Copy className="w-4 h-4" />}
+              Salin dari Master Data
+            </button>
+            <button
+              type="button"
+              onClick={handleCalculate}
+              disabled={!cycleId || calculate.isPending || activeCycle?.isLocked}
+              className="btn btn-primary"
+            >
+              {calculate.isPending ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4 mr-2" />
+              )}
+              {calculate.isPending ? 'Menghitung...' : 'Hitung'}
+            </button>
+          </div>
+        </div>
+
+        {activeCycle && (
+          <div className="mt-3 text-xs text-gray-500 space-y-1">
+            <div>{activeCycle.displayText}</div>
+            <div>
+              MRP {activeCycle.weekCount} minggu: {formatWeekDate(activeCycle.mrpStartDate)} –{' '}
+              {formatWeekDate(activeCycle.mrpEndDate)}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Panel sumber data */}
+      {activeCycle && (
+        <div className="card overflow-hidden">
+          {/* ── Header (selalu tampil) ── */}
+          <button
+            type="button"
+            onClick={() => setShowSources((v) => !v)}
+            className="w-full px-4 py-3 border-b bg-gray-50 flex items-center justify-between hover:bg-gray-100 transition-colors"
+          >
+            <span className="font-semibold text-sm text-gray-800">
+              Kelengkapan Data Periode {activeCycle.label}
+            </span>
+            <span className="flex items-center gap-1.5 text-xs text-gray-500">
+              {showSources ? (
+                <><ChevronDown className="w-4 h-4" /> Sembunyikan</>
+              ) : (
+                <><ChevronRight className="w-4 h-4" /> Lihat detail</>
+              )}
+            </span>
+          </button>
+
+          {/* ── Konten (kolaps) ── */}
+          {showSources && (
+            <>
+              <table className="w-full text-sm">
+                <thead className="text-xs text-gray-500 uppercase bg-gray-50/70">
+                  <tr>
+                    <th className="px-4 py-2 text-left font-semibold">Sumber</th>
+                    <th className="px-4 py-2 text-right font-semibold">Baris</th>
+                    <th className="px-4 py-2 text-left font-semibold">Diupload</th>
+                    <th className="px-4 py-2 text-center font-semibold">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {(sourcesData?.data ?? []).map((s) => (
+                    <tr key={s.sourceType}>
+                      <td className="px-4 py-2 text-gray-800">{SOURCE_LABELS[s.sourceType] ?? s.sourceType}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-gray-700">{formatNum(s.rowCount, 0)}</td>
+                      <td className="px-4 py-2 text-gray-600">{formatDateTime(s.uploadedAt)}</td>
+                      <td className="px-4 py-2 text-center">
+                        {s.rowCount > 0 ? (
+                          <CheckCircle className="w-4 h-4 text-green-600 inline" />
+                        ) : (
+                          <AlertTriangle className="w-4 h-4 text-amber-500 inline" />
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="bg-gray-50/60">
+                    <td className="px-4 py-2 text-gray-700">
+                      NPOF <span className="text-[11px] text-gray-500">↻ referensi bersama semua periode</span>
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums text-gray-700">
+                      {formatNum(activeCycle.npofInfo.totalRows, 0)}
+                    </td>
+                    <td className="px-4 py-2 text-gray-600">{formatDateTime(activeCycle.npofInfo.lastUpdatedAt)}</td>
+                    <td className="px-4 py-2 text-center text-[11px] text-gray-500">
+                      {activeCycle.npofInfo.changedSinceCalculation ? 'berubah sejak hitung terakhir' : 'tidak berubah'}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+
+              {coverage && coverage.partsWithoutNpof > 0 && (
+                <div className="px-4 py-3 border-t bg-amber-50 text-xs text-amber-800 flex items-start gap-2">
+                  <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <div>
+                      {formatNum(coverage.partsWithoutNpof, 0)} dari {formatNum(coverage.partCount, 0)} part tidak punya data
+                      NPOF → dihitung dengan estimasi jumbo roll 180 cm.
+                    </div>
+                    <div className="mt-0.5">
+                      {formatNum(coverage.partsWithStock, 0)} part mendapat alokasi stok/PO, total{' '}
+                      {formatNum(coverage.allocatedKg, 0)} kg.
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Riwayat perhitungan */}
+      {runs.length > 0 && (
+        <div className="card overflow-hidden">
+          <div className="px-4 py-3 border-b bg-gray-50 font-semibold text-sm text-gray-800 flex items-center justify-between">
+            <span>Riwayat Perhitungan</span>
+            <span className="text-xs font-normal text-gray-500">
+              Hanya hasil yang sedang aktif dan yang ditandai tersimpan yang disimpan.
+            </span>
+          </div>
+          <table className="w-full text-sm">
+            <tbody className="divide-y divide-gray-100">
+              {runs.map((r) => (
+                <tr key={r.id} className={r.isCurrent ? 'bg-indigo-50/40' : ''}>
+                  <td className="px-4 py-2 font-medium text-gray-800">run #{r.runNumber}</td>
+                  <td className="px-4 py-2 text-gray-600">{formatDateTime(r.calculatedAt)}</td>
+                  <td className="px-4 py-2">
+                    {r.isCurrent && <span className="text-xs text-green-700 font-medium">✅ aktif</span>}
+                    {r.isSaved && (
+                      <span className="text-xs text-indigo-700 font-medium ml-2">
+                        💾 tersimpan{r.savedNote ? ` — "${r.savedNote}"` : ''}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedRunId(r.id);
+                        setCalcResult(null);
+                      }}
+                      className="text-xs px-3 py-1.5 rounded-md border text-gray-700 hover:bg-gray-50"
+                    >
+                      Lihat
+                    </button>
+                    {r.isCurrent && !r.isSaved && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const note = window.prompt('Catatan versi ini (opsional):', '') ?? '';
+                          void patchResult.mutateAsync({
+                            cycleId: activeCycle!.id,
+                            resultId: r.id,
+                            isSaved: true,
+                            savedNote: note,
+                          });
+                        }}
+                        className="text-xs px-3 py-1.5 rounded-md bg-indigo-600 text-white inline-flex items-center gap-1"
+                      >
+                        <Bookmark className="w-3.5 h-3.5" />
+                        Simpan sebagai versi
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Hasil */}
+      {groups.length > 0 && (
         <>
-          {/* Summary */}
+          {/* ── Ringkasan angka ── */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="card p-4">
               <div className="text-sm text-gray-500">Total Grup Material</div>
-              <div className="text-2xl font-bold text-gray-900 mt-1">{data.groups.length}</div>
+              <div className="text-2xl font-bold text-gray-900 mt-1">{groups.length}</div>
             </div>
             <div className="card p-4 border-red-200">
               <div className="text-sm text-gray-500">Perlu Dibeli</div>
-              <div className="text-2xl font-bold text-red-600 mt-1">{totalShortageGroups} grup</div>
+              <div className="text-2xl font-bold text-red-600 mt-1">{shortageGroups} grup</div>
             </div>
             <div className="card p-4 border-green-200">
               <div className="text-sm text-gray-500">Stok Tercukupi</div>
-              <div className="text-2xl font-bold text-green-600 mt-1">{totalSufficientGroups} grup</div>
+              <div className="text-2xl font-bold text-green-600 mt-1">{sufficientGroups} grup</div>
             </div>
           </div>
 
-          {/* Info bar */}
-          <div className="text-xs text-gray-400">
-            Dihitung pada: {format(new Date(data.calculatedAt), 'dd MMM yyyy, HH:mm')}
-            &nbsp;&middot;&nbsp;Periode MRP: {formatWeekDate(data.periodStartDate)} - {formatWeekDate(data.periodEndDate)} ({data.periodWeeks} minggu)
-          </div>
-
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={() => printMaterialCalculation(data)}
-              className="btn btn-secondary"
-            >
-              <Download className="w-4 h-4 mr-2" />
-              Export PDF
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={saveCalculation.isPending}
-              className="btn btn-primary"
-            >
-              <Save className="w-4 h-4 mr-2" />
-              {saveCalculation.isPending ? 'Menyimpan...' : 'Simpan History'}
-            </button>
-          </div>
-
-          {/* Main table: per-material weekly matrix (Excel style) */}
-          {data.groups.length === 0 ? (
-            <div className="card p-12 text-center text-gray-500">
-              <Calculator className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-              <p className="font-medium text-gray-700">Tidak ada data demand</p>
-              <p className="text-sm mt-1">Pastikan data MRP (26-Week Demand) sudah diinput</p>
+          {/* ── Grid folder card ── */}
+          <div>
+            <div className="text-xs font-medium text-gray-500 mb-2 uppercase tracking-wide">
+              Pilih jenis material
             </div>
-          ) : (
-            <div className="space-y-4">
-              {data.groups.map((group, idx) => (
-                <GroupMatrixCard key={idx} group={group} />
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+              {/* Card "Semua" */}
+              <button
+                type="button"
+                onClick={() => setSelectedMaterialType(null)}
+                className={`
+                  w-full text-left rounded-xl border-2 p-4 transition-all duration-150
+                  hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-300
+                  ${selectedMaterialType === null
+                    ? 'bg-indigo-50 border-indigo-400 shadow-sm'
+                    : 'bg-white border-gray-200 hover:border-gray-300'}
+                `}
+              >
+                <div className="flex items-start gap-3">
+                  <div className={`mt-0.5 ${selectedMaterialType === null ? 'text-indigo-500' : 'text-gray-400'}`}>
+                    {selectedMaterialType === null
+                      ? <FolderOpen className="w-7 h-7" />
+                      : <Folder className="w-7 h-7" />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className={`font-semibold text-sm ${selectedMaterialType === null ? 'text-indigo-800' : 'text-gray-700'}`}>
+                      Semua
+                    </div>
+                    <div className="text-xs text-gray-500 mt-0.5">{groups.length} ukuran</div>
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {shortageGroups > 0 && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-red-100 text-red-700">
+                          ⚠️ {shortageGroups} kurang
+                        </span>
+                      )}
+                      {sufficientGroups > 0 && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-green-100 text-green-700">
+                          ✅ {sufficientGroups} cukup
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </button>
+
+              {/* Card per jenis material */}
+              {groupedByType.map(({ type, groups: typeGroups }) => (
+                <MaterialFolderCard
+                  key={type}
+                  materialType={type}
+                  groups={typeGroups}
+                  isSelected={selectedMaterialType === type}
+                  onClick={() =>
+                    setSelectedMaterialType((prev) => (prev === type ? null : type))
+                  }
+                />
               ))}
             </div>
-          )}
+          </div>
 
+          {/* ── Tabel detail (difilter sesuai kartu terpilih) ── */}
+          <div className="card overflow-hidden">
+            {selectedMaterialType && (
+              <div className={`px-4 py-2 border-b text-xs font-medium flex items-center gap-2 ${getMeta(selectedMaterialType).bg} ${getMeta(selectedMaterialType).color}`}>
+                <Folder className="w-3.5 h-3.5" />
+                Menampilkan: {selectedMaterialType} ({displayedGroups.length} ukuran)
+                <button
+                  type="button"
+                  onClick={() => setSelectedMaterialType(null)}
+                  className="ml-auto text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead className="text-xs text-gray-500 uppercase bg-gray-50/80">
+                  <tr>
+                    <th className="px-4 py-3 w-10"></th>
+                    <th className="px-4 py-3 font-semibold">Ukuran Material</th>
+                    <th className="px-4 py-3 font-semibold">Gramatur</th>
+                    <th className="px-4 py-3 font-semibold">Supplier</th>
+                    <th className="px-4 py-3 font-semibold text-center">Lead Time</th>
+                    <th className="px-4 py-3 font-semibold">Estimasi Pengadaan</th>
+                    <th className="px-4 py-3 font-semibold text-right">Total Sheet Beli</th>
+                    <th className="px-4 py-3 font-semibold text-right">Total Kg Beli</th>
+                    <th className="px-4 py-3 font-semibold">Status</th>
+                    <th className="px-4 py-3 font-semibold text-center">Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayedGroups.map((group, idx) => (
+                    <GroupRow key={`${group.ukuran}-${group.gramatur}-${idx}`} group={group} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </>
       )}
 
-      {!hasCalculated && !isLoading && (
+      {activeCycle && groups.length === 0 && !calculate.isPending && (
         <div className="card p-12 text-center text-gray-400">
           <Calculator className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-          <p className="font-medium">Klik "Hitung Sekarang" untuk menjalankan kalkulasi</p>
-          <p className="text-sm mt-1">Kalkulasi akan mengambil data dari MRP, Hotlist, WIP, Stock, dan Outstanding PO</p>
+          <p className="font-medium text-gray-600">
+            {activeCycle.currentResult ? 'Klik "Lihat" pada riwayat untuk membuka hasil' : 'Klik "Hitung" untuk menjalankan kalkulasi'}
+          </p>
+          <p className="text-sm mt-1">
+            Kalau data periode masih kosong, tekan "Salin dari Master Data" dulu agar data MRP, Hotlist, Stock, PO, dan
+            WIP masuk ke periode ini.
+          </p>
         </div>
       )}
 
-      {!hasCalculated && (
-        <div className="space-y-3">
-          <h2 className="text-base font-semibold flex items-center gap-2 text-gray-700">
-            <Folder className="w-4 h-4 text-indigo-600" /> History Kalkulasi Bulanan
-          </h2>
-          {historyData?.data.length ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {historyData.data.map((history) => (
-                <button key={history.id} type="button" onClick={() => { setSelectedHistoryId(history.id); setSelectedHistoryFolder(null); }} className="border rounded-lg p-4 bg-white text-left hover:border-indigo-400 hover:shadow-sm transition-all">
-                  <div className="font-semibold text-gray-800">{formatMonth(history.monthKey)}</div>
-                  <div className="text-xs text-gray-500 mt-1">Periode {formatWeekDate(history.periodStartDate)} - {formatWeekDate(history.periodEndDate)}</div>
-                  <div className="text-xs text-gray-500 mt-2">{history.sources.length + 1} folder tersedia</div>
-                  <div className="flex items-center justify-between mt-3">
-                    <span className="text-xs text-indigo-600 font-medium">Buka detail history</span>
-                    <span className="flex items-center gap-1">
-                      <span role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); void handleEditHistory(history); }} onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); void handleEditHistory(history); } }} className="p-1.5 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded" title="Edit periode"><Pencil className="w-4 h-4" /></span>
-                      <span role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); void handleDeleteHistory(history.id); }} onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); void handleDeleteHistory(history.id); } }} className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded" title="Hapus folder history"><Trash2 className="w-4 h-4" /></span>
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="text-sm text-gray-400">Belum ada history tersimpan.</div>
-          )}
-        </div>
-      )}
-
-      {!hasCalculated && selectedHistoryId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setSelectedHistoryId(null)}>
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-hidden" onClick={(event) => event.stopPropagation()}>
+      {/* Modal: riwayat perubahan */}
+      {showAudit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShowAudit(false)}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[85vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b px-6 py-4">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">Folder History Kalkulasi</h2>
-                {selectedHistoryData?.data && <p className="text-sm text-gray-500">{formatMonth(selectedHistoryData.data.monthKey)} · {formatWeekDate(selectedHistoryData.data.periodStartDate)} - {formatWeekDate(selectedHistoryData.data.periodEndDate)}</p>}
-              </div>
-              <button type="button" onClick={() => setSelectedHistoryId(null)} className="p-2 text-gray-500 hover:bg-gray-100 rounded" title="Tutup"><X className="w-5 h-5" /></button>
+              <h2 className="text-lg font-semibold text-gray-900">Riwayat Perubahan Periode</h2>
+              <button type="button" onClick={() => setShowAudit(false)} className="p-2 text-gray-500 hover:bg-gray-100 rounded">
+                <X className="w-5 h-5" />
+              </button>
             </div>
-            <div className="p-6 overflow-y-auto max-h-[calc(90vh-80px)]">
-              {isLoadingHistoryDetail ? <div className="py-12 text-center text-gray-500">Memuat folder history...</div> : selectedHistoryData?.data ? (
-                selectedHistoryFolder ? (
-                  <div>
-                    <button type="button" onClick={() => setSelectedHistoryFolder(null)} className="mb-4 inline-flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-800">← Kembali ke folder</button>
-                    {selectedHistoryFolder === 'CALCULATION' ? <div className="border rounded-lg overflow-hidden"><div className="bg-gray-50 border-b px-4 py-3 font-semibold">Hasil Material Calculation</div><HistoryResultTable snapshot={selectedHistoryData.data.resultSnapshot} /></div> : (() => { const source = selectedHistoryData.data.sources.find((item) => item.sourceType === selectedHistoryFolder); return source ? <div className="border rounded-lg overflow-hidden"><div className="bg-gray-50 border-b px-4 py-3 font-semibold">{source.sourceType}</div><SnapshotTable data={source.dataSnapshot} sourceType={source.sourceType} /></div> : <div className="text-gray-500">Folder tidak ditemukan.</div>; })()}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                    <button type="button" onClick={() => setSelectedHistoryFolder('CALCULATION')} className="border rounded-lg p-5 text-left hover:border-indigo-400 hover:shadow-sm"><Folder className="w-9 h-9 text-indigo-600 mb-3" /><div className="font-semibold">Calculation</div><div className="text-xs text-gray-500 mt-1">Hasil perhitungan material</div></button>
-                    {selectedHistoryData.data.sources.map((source) => <button key={source.sourceType} type="button" onClick={() => setSelectedHistoryFolder(source.sourceType)} className="border rounded-lg p-5 text-left hover:border-indigo-400 hover:shadow-sm"><Folder className="w-9 h-9 text-blue-500 mb-3" /><div className="font-semibold">{source.sourceType}</div><div className="text-xs text-gray-500 mt-1">Snapshot data yang digunakan</div></button>)}
-                  </div>
-                )
-              ) : <div className="py-12 text-center text-gray-500">Detail history tidak ditemukan.</div>}
+            <div className="p-6 overflow-y-auto max-h-[calc(85vh-80px)]">
+              {auditData?.data.length ? (
+                <ul className="space-y-3">
+                  {auditData.data.map((a: CycleAuditEntry) => (
+                    <li key={a.id} className="border rounded-lg p-3">
+                      <div className="flex items-center justify-between text-xs text-gray-500">
+                        <span className="font-medium text-gray-700">
+                          {a.action} · {a.sourceType ?? a.entityType}
+                        </span>
+                        <span>{formatDateTime(a.createdAt)}</span>
+                      </div>
+                      <div className="text-sm text-gray-700 mt-1">{a.notes || '—'}</div>
+                      <div className="text-xs text-gray-500 mt-0.5">oleh {a.user?.name ?? '—'}</div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="py-8 text-center text-gray-500 text-sm">Belum ada catatan perubahan.</div>
+              )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Modal: buat periode baru */}
+      {showNewPeriod && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShowNewPeriod(false)}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <div className="border-b px-6 py-4 font-semibold text-gray-900">Buat Periode Baru</div>
+            <div className="px-6 py-4 space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Bulan upload</label>
+                <input type="month" value={newMonth} onChange={(e) => setNewMonth(e.target.value)} className="input w-full" />
+                <p className="text-xs text-gray-500 mt-1">
+                  Periode ditentukan oleh bulan upload, bukan tanggal di dalam data. Satu bulan upload = satu periode.
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Nama periode (opsional)</label>
+                <input
+                  value={newLabel}
+                  onChange={(e) => setNewLabel(e.target.value)}
+                  placeholder={formatMonth(newMonth)}
+                  className="input w-full"
+                />
+              </div>
+            </div>
+            <div className="border-t px-6 py-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setShowNewPeriod(false)} className="px-4 py-2 text-sm rounded-md border">
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleCreatePeriod}
+                disabled={createCycle.isPending}
+                className="px-4 py-2 text-sm rounded-md bg-indigo-600 text-white disabled:opacity-50"
+              >
+                {createCycle.isPending ? 'Membuat...' : 'Buat Periode'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dialog: NPOF berubah */}
+      {confirmNpof && (
+        <ConfirmDialog
+          title="ℹ️ NPOF sudah berubah"
+          lines={[
+            `Data NPOF terakhir diubah ${formatDateTime(npofCheck?.data.npofLastUpdatedAt)}.`,
+            `Periode ini terakhir dihitung ${formatDateTime(npofCheck?.data.lastCalculatedAt)}.`,
+            'Perhitungan akan mengikuti NPOF yang sudah berubah, sehingga angka periode ini bisa berbeda dari sebelumnya. Periode lain tidak terpengaruh.',
+          ]}
+          confirmLabel="Lanjutkan Hitung"
+          busy={calculate.isPending}
+          onCancel={() => setConfirmNpof(false)}
+          onConfirm={() => void doCalculate()}
+        />
+      )}
+
+      {/* Modal retensi */}
+      {retentionTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setRetentionTarget(null)}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="border-b px-6 py-4 font-semibold text-gray-900">⏳ Periode melewati retensi 18 bulan</div>
+            <div className="px-6 py-4 space-y-3 text-sm text-gray-700">
+              <p>
+                Periode <strong>{retentionTarget.label}</strong> sudah melewati batas retensi dan punya{' '}
+                {retentionTarget.savedResults.length} hasil tersimpan.
+              </p>
+              <ul className="text-xs text-gray-600 list-disc pl-5">
+                {retentionTarget.savedResults.map((r) => (
+                  <li key={r.id}>
+                    run #{r.runNumber} · {formatDateTime(r.calculatedAt)}
+                    {r.savedNote ? ` — "${r.savedNote}"` : ''}
+                  </li>
+                ))}
+              </ul>
+              <div className="space-y-2 pt-2">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    checked
+                    readOnly
+                    className="accent-indigo-600"
+                  />
+                  <span>Tetap simpan selama</span>
+                  <select
+                    value={retentionMonths}
+                    onChange={(e) => setRetentionMonths(Number(e.target.value))}
+                    className="input py-1"
+                  >
+                    {(expiredData?.extensions ?? [3, 6, 9, 12]).map((m) => (
+                      <option key={m} value={m}>
+                        {m} bulan
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div className="border-t px-6 py-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  void retention.mutateAsync({ cycleId: retentionTarget.id, action: 'delete' });
+                  setRetentionTarget(null);
+                }}
+                className="px-4 py-2 text-sm rounded-md border text-red-600"
+              >
+                Hapus sekarang
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void retention.mutateAsync({ cycleId: retentionTarget.id, action: 'keep', months: retentionMonths });
+                  setRetentionTarget(null);
+                }}
+                className="px-4 py-2 text-sm rounded-md bg-indigo-600 text-white"
+              >
+                Terapkan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pemberitahuan retensi (tidak menutupi halaman) */}
+      {expired.length > 0 && !retentionTarget && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 flex items-start justify-between gap-4">
+          <div>
+            Ada {expired.length} periode yang sudah melewati retensi 18 bulan dan punya hasil tersimpan. Data tidak
+            dihapus otomatis — silakan pilih mau tetap disimpan atau dihapus.
+          </div>
+          <button
+            type="button"
+            onClick={() => setRetentionTarget(expired[0])}
+            className="px-3 py-1.5 text-xs rounded-md bg-amber-600 text-white whitespace-nowrap"
+          >
+            Tinjau
+          </button>
+        </div>
+      )}
+
+      {/* Info kunci manual */}
+      {activeCycle?.isLocked && (
+        <div className="rounded-lg border border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-700 flex items-center gap-2">
+          <Lock className="w-4 h-4" />
+          Periode ini terkunci. Data dan perhitungan tidak bisa diubah sampai kunci dibuka oleh SUPER_ADMIN.
+          <Unlock className="w-4 h-4 ml-2" />
         </div>
       )}
     </div>

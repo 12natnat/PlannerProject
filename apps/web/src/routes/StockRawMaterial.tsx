@@ -3,6 +3,21 @@ import { useStockRawMaterial, useUploadStockRawMaterial, useAddManualStockRawMat
 import { FileSpreadsheet, Plus, Upload, Loader2, Search, Pencil, Trash2, X, Check, Save, Folder, ArrowLeft, ChevronDown, ChevronRight, ChevronsDown, ChevronsUp } from 'lucide-react';
 import { format } from 'date-fns';
 
+// Satuan yang benar-benar dipakai data.
+// CATATAN PENTING: satuan terbanyak di data adalah "sht" (199 baris), BUKAN
+// "sheet". Sebelumnya kode hanya mengenali "sheet"/"sheets", sehingga seluruh
+// baris "sht" salah dihitung sebagai kg.
+const SHEET_UNITS = ['sheet', 'sheets', 'sht', 'lbr', 'lembar'];
+const RIM_UNITS = ['rim', 'ream'];
+const SHEETS_PER_RIM = 500; // sama dengan config.materialCalc.sheetsPerRim di API
+
+const normalizeUnit = (unit: string | null | undefined) => String(unit || '').trim().toLowerCase();
+const unitLabel = (unit: string | null | undefined) => {
+  const value = String(unit || '').trim();
+  return value === '' ? '(tanpa satuan)' : value;
+};
+const isKnownUnit = (unit: string) => SHEET_UNITS.includes(unit) || RIM_UNITS.includes(unit) || unit === 'kg';
+
 export function StockRawMaterial() {
   const { data: stockData, isLoading } = useStockRawMaterial();
   const uploadMutation = useUploadStockRawMaterial();
@@ -241,32 +256,57 @@ export function StockRawMaterial() {
 
   const groupedByItem = useMemo(() => {
     const groups: Record<string, {
+      key: string;
       itemDesc: string;
       suppliers: string;
-      unit: string;
-      totalQty: number;
+      /**
+       * Total PER SATUAN — sengaja TIDAK dijumlahkan lintas satuan.
+       * Menjumlahkan kg + lembar + rim menghasilkan angka yang tidak berarti,
+       * dan itulah bug yang pernah membuat total stok terlihat aneh.
+       */
+      totals: { unit: string; qty: number; lots: number }[];
+      /** Satuan yang tidak dikenali; angkanya tetap ditampilkan apa adanya. */
+      unknownUnits: string[];
       items: StockRawMaterialData[];
     }> = {};
 
     filteredRecords.forEach((record) => {
-      const key = record.itemDesc.trim();
-      if (!groups[key]) {
-        groups[key] = {
+      // Dikelompokkan per itemDesc + SUPPLIER (rancangan §8.6). Kalau digabung
+      // hanya per itemDesc, material dari supplier berbeda akan tercampur dan
+      // label suppliernya menyesatkan.
+      const groupKey = `${record.itemDesc.trim()}||${record.supplier || ''}`;
+      if (!groups[groupKey]) {
+        groups[groupKey] = {
+          key: groupKey,
           itemDesc: record.itemDesc,
           suppliers: record.supplier || '',
-          unit: record.unit,
-          totalQty: 0,
+          totals: [],
+          unknownUnits: [],
           items: [],
         };
       }
-      groups[key].totalQty += record.qty;
-      groups[key].items.push(record);
+      groups[groupKey].items.push(record);
+
+      // Akumulasi per satuan (tidak dicampur).
+      const label = unitLabel(record.unit);
+      const existing = groups[groupKey].totals.find((t) => t.unit.toLowerCase() === label.toLowerCase());
+      if (existing) {
+        existing.qty += record.qty;
+        existing.lots += 1;
+      } else {
+        groups[groupKey].totals.push({ unit: label, qty: record.qty, lots: 1 });
+      }
+
+      const normalized = normalizeUnit(record.unit);
+      if (!isKnownUnit(normalized) && !groups[groupKey].unknownUnits.includes(label)) {
+        groups[groupKey].unknownUnits.push(label);
+      }
 
       if (record.supplier) {
-        const currentSuppliers = groups[key].suppliers.split(', ').filter(Boolean);
+        const currentSuppliers = groups[groupKey].suppliers.split(', ').filter(Boolean);
         if (!currentSuppliers.includes(record.supplier)) {
-          groups[key].suppliers = currentSuppliers.length > 0
-            ? `${groups[key].suppliers}, ${record.supplier}`
+          groups[groupKey].suppliers = currentSuppliers.length > 0
+            ? `${groups[groupKey].suppliers}, ${record.supplier}`
             : record.supplier;
         }
       }
@@ -288,7 +328,7 @@ export function StockRawMaterial() {
   };
 
   const expandAll = () => {
-    setExpandedItemDescs(new Set(groupedByItem.map(g => g.itemDesc)));
+    setExpandedItemDescs(new Set(groupedByItem.map(g => g.key)));
   };
 
   const collapseAll = () => {
@@ -584,13 +624,13 @@ export function StockRawMaterial() {
                     </tr>
                   ) : (
                     groupedByItem.map((group) => {
-                      const isExpanded = expandedItemDescs.has(group.itemDesc);
+                      const isExpanded = expandedItemDescs.has(group.key);
                       const groupIds = group.items.map(i => i.id);
                       const isGroupAllSelected = groupIds.length > 0 && groupIds.every(id => selectedIds.includes(id));
                       const isGroupSomeSelected = groupIds.some(id => selectedIds.includes(id)) && !isGroupAllSelected;
 
                       return (
-                        <Fragment key={group.itemDesc}>
+                        <Fragment key={group.key}>
                           {/* Parent Group Row */}
                           <tr className="hover:bg-muted/40 transition-colors bg-card font-medium border-b">
                             <td className="px-4 py-3.5 text-center">
@@ -607,7 +647,7 @@ export function StockRawMaterial() {
                             <td className="px-6 py-3.5">
                               <div className="flex items-center gap-2">
                                 <button
-                                  onClick={() => toggleExpand(group.itemDesc)}
+                                  onClick={() => toggleExpand(group.key)}
                                   className="p-1 hover:bg-muted/80 rounded transition-colors text-muted-foreground hover:text-foreground shrink-0"
                                   title={isExpanded ? 'Tutup Detail' : 'Buka Detail'}
                                 >
@@ -617,7 +657,7 @@ export function StockRawMaterial() {
                                     <ChevronRight className="w-4 h-4" />
                                   )}
                                 </button>
-                                <span className="font-bold text-foreground cursor-pointer hover:text-primary transition-colors" onClick={() => toggleExpand(group.itemDesc)}>
+                                <span className="font-bold text-foreground cursor-pointer hover:text-primary transition-colors" onClick={() => toggleExpand(group.key)}>
                                   {group.itemDesc}
                                 </span>
                                 <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground">
@@ -632,16 +672,46 @@ export function StockRawMaterial() {
                                 : `${group.items.length} records`}
                             </td>
                             <td className="px-6 py-3.5 text-right font-extrabold text-foreground text-sm">
-                              {group.totalQty.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 4 })}
+                              <div className="space-y-0.5">
+                                {group.totals.map((t) => {
+                                  const isRim = RIM_UNITS.includes(t.unit.toLowerCase());
+                                  return (
+                                    <div key={t.unit}>
+                                      {t.qty.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 4 })}
+                                      {isRim && (
+                                        <span className="block text-[10px] font-normal text-muted-foreground">
+                                          = {(t.qty * SHEETS_PER_RIM).toLocaleString('id-ID')} lbr
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              {group.unknownUnits.length > 0 && (
+                                <div className="text-[10px] font-normal text-amber-600 mt-1">
+                                  ⚠️ satuan tidak dikenali: {group.unknownUnits.join(', ')}
+                                </div>
+                              )}
                             </td>
                             <td className="px-6 py-3.5 text-center">
-                              <span className="bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded text-xs">
-                                {group.unit}
-                              </span>
+                              <div className="flex flex-wrap gap-1 justify-center">
+                                {group.totals.map((t) => (
+                                  <span
+                                    key={t.unit}
+                                    className={`font-semibold px-2.5 py-1 rounded text-xs ${
+                                      isKnownUnit(t.unit.toLowerCase())
+                                        ? 'bg-primary/10 text-primary'
+                                        : 'bg-amber-100 text-amber-700'
+                                    }`}
+                                  >
+                                    {t.unit}
+                                  </span>
+                                ))}
+                              </div>
                             </td>
                             <td className="px-6 py-3.5 text-right">
                               <button
-                                onClick={() => toggleExpand(group.itemDesc)}
+                                onClick={() => toggleExpand(group.key)}
                                 className="text-xs text-primary hover:text-primary/80 font-medium inline-flex items-center gap-1 p-1 hover:bg-primary/10 rounded transition-colors"
                               >
                                 {isExpanded ? 'Tutup' : 'Detail'}

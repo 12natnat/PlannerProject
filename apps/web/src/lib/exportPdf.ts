@@ -21,27 +21,46 @@ function weekLabel(date: string): string {
   return `${parsed.getMonth() + 1}/${parsed.getDate()}`;
 }
 
-function valueCell(value: number): string {
-  const cls = value < 0 ? ' class="neg"' : '';
-  return `<td${cls}>${num(value)}</td>`;
+/** Sel minggu: baris atas = sheet (lembar), baris bawah = kg. */
+function unitCell(sheet: number | undefined, kg: number | undefined, hasKg: boolean): string {
+  const cls = (value: number) => (value < 0 ? ' class="neg"' : '');
+  const sheetValue = sheet ?? 0;
+  const kgValue = kg ?? 0;
+  const kgLine = hasKg
+    ? `<span class="sub${kgValue < 0 ? ' neg' : ''}">${num(kgValue)} kg</span>`
+    : '<span class="sub muted">—</span>';
+  return `<td${cls(sheetValue)}>${num(sheetValue, 0)} lbr${kgLine}</td>`;
 }
 
-function summaryRow(label: string, values: number[], width: number): string {
-  const cells = values.map(valueCell).join('');
-  const dashes = new Array(Math.max(0, width - values.length))
+function summaryRow(
+  label: string,
+  sheetValues: number[] | undefined,
+  kgValues: number[] | undefined,
+  hasKg: boolean,
+  width: number,
+): string {
+  const cells = new Array(Math.max(0, width))
     .fill(0)
-    .map(() => '<td>—</td>')
+    .map((_, i) => unitCell(sheetValues?.[i], kgValues?.[i], hasKg))
     .join('');
-  return `<tr><td colspan="7" class="label">${esc(label)}</td>${cells}${dashes}</tr>`;
+  return `<tr><td colspan="7" class="label">${esc(label)}</td>${cells}</tr>`;
 }
 
-function stockRow(stockAsOf: number, width: number): string {
+function stockRow(stockAsOfSheet: number | undefined, stockAsOfKg: number | undefined, hasKg: boolean, width: number): string {
+  const first = unitCell(stockAsOfSheet, stockAsOfKg, hasKg);
   const rest = new Array(Math.max(0, width - 1))
     .fill(0)
     .map(() => '<td>—</td>')
     .join('');
-  return `<tr><td colspan="7" class="label">Stock As Of</td><td>${num(stockAsOf)}</td>${rest}</tr>`;
+  return `<tr><td colspan="7" class="label">Stock As Of</td>${first}${rest}</tr>`;
 }
+
+const MATERIAL_LABELS: Record<string, string> = {
+  Paper: 'Paper',
+  PET: 'PET (R-PET)',
+  Flute: 'Flute / Duplek',
+  Lainnya: 'Tanpa Data NPOF / Lainnya',
+};
 
 function groupTableHtml(group: NonNullable<MaterialCalcResponse['groups']>[number]): string {
   const matrix = group.weeklyMatrix;
@@ -63,28 +82,36 @@ function groupTableHtml(group: NonNullable<MaterialCalcResponse['groups']>[numbe
         <td>${esc(row.width)}</td>
         <td>${esc(row.length)}</td>
         <td>${row.up}</td>
-        <td>${num(row.kgPerSheet, 4)}</td>
-        ${row.weeks.map(valueCell).join('')}
+        <td>${row.hasKg === false ? '—' : num(row.kgPerSheet, 4)}</td>
+        ${row.weeks.map((value, index) => unitCell(row.weeksSheet?.[index], value, row.hasKg !== false)).join('')}
       </tr>`,
     )
     .join('');
 
   const summary = matrix.summary;
   const width = matrix.columns.length;
+  const hasKg = Boolean(group.hasKg ?? matrix.rows.some((row) => row.hasKg));
   const summaryHtml = [
-    summaryRow('Total Req', summary.totalReq, width),
-    summaryRow('Allowance (5%)', summary.allowance, width),
-    summaryRow('Total + Allowance', summary.totalPlusAllowance, width),
-    stockRow(summary.stockAsOf, width),
-    summaryRow('Outstanding PO', summary.outstandingPo, width),
-    summaryRow('End Ind', summary.endInd, width),
+    summaryRow('Total Req (lbr / kg)', summary.totalReqSheet, summary.totalReq, hasKg, width),
+    summaryRow('Allowance (5%)', summary.allowanceSheet, summary.allowance, hasKg, width),
+    summaryRow('Total + Allowance', summary.totalPlusAllowanceSheet, summary.totalPlusAllowance, hasKg, width),
+    stockRow(summary.stockAsOfSheet, summary.stockAsOf, hasKg, width),
+    summaryRow('Outstanding PO', summary.outstandingPoSheet, summary.outstandingPo, hasKg, width),
+    summaryRow('End Ind', summary.endIndSheet, summary.endInd, hasKg, width),
   ].join('');
+
+  const status = group.isSufficient
+    ? `Tercukupi, sisa ${num(group.surplusSheet, 0)} lbr${group.hasKg ? ` / ${num(group.surplusKg)} kg` : ''}`
+    : `Kurang ${num(group.totalShortageSheet, 0)} lbr${group.hasKg ? ` / ${num(group.totalShortageKg)} kg` : ''}`;
 
   return `<section class="group">
     <h2>${esc(group.ukuran)}</h2>
-    <div class="meta">Gramatur: ${esc(group.gramatur || '—')} &middot; Supplier: ${esc(
+    <div class="meta">Material: ${esc(
+      MATERIAL_LABELS[group.materialType || 'Lainnya'] || group.materialType || '—',
+    )} &middot; Gramatur: ${esc(group.gramatur || '—')} &middot; Supplier: ${esc(
       group.supplier,
-    )} &middot; Lead Time: ${group.leadTimeMonths} bln &middot; ${group.details.length} part</div>
+    )} &middot; Lead Time: ${group.leadTimeMonths} bln &middot; ${group.details.length} part &middot; ${esc(status)}</div>
+    <div class="meta muted">Setiap kolom minggu: baris atas = sheet (lembar), baris bawah = kg.</div>
     <table>
       <thead>
         <tr>
@@ -94,7 +121,7 @@ function groupTableHtml(group: NonNullable<MaterialCalcResponse['groups']>[numbe
           <th>Width</th>
           <th>Length</th>
           <th>Up</th>
-          <th>Kg</th>
+          <th>Kg/Lembar</th>
           ${weekHeaders}
         </tr>
       </thead>
@@ -107,7 +134,28 @@ function groupTableHtml(group: NonNullable<MaterialCalcResponse['groups']>[numbe
 }
 
 export function printMaterialCalculation(data: MaterialCalcResponse): void {
-  const groupsHtml = data.groups.map(groupTableHtml).join('');
+  const folders = new Map<string, NonNullable<MaterialCalcResponse['groups']>>();
+  for (const group of data.groups) {
+    const family = group.materialType || 'Lainnya';
+    const list = folders.get(family);
+    if (list) list.push(group);
+    else folders.set(family, [group]);
+  }
+
+  const groupsHtml = [...folders.entries()]
+    .sort((a, b) => {
+      const order = ['Paper', 'PET', 'Flute', 'Lainnya'];
+      const ai = order.indexOf(a[0]);
+      const bi = order.indexOf(b[0]);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    })
+    .map(
+      ([family, groups]) => `<section class="folder">
+        <h1 class="folder-title">Folder: ${esc(MATERIAL_LABELS[family] || family)} (${groups.length} grup)</h1>
+        ${groups.map(groupTableHtml).join('')}
+      </section>`,
+    )
+    .join('');
 
   const html = `<!doctype html>
 <html lang="id">
@@ -132,8 +180,11 @@ export function printMaterialCalculation(data: MaterialCalcResponse): void {
   thead th:nth-child(1), thead th:nth-child(2) { text-align: left; }
   td:nth-child(1), td:nth-child(2) { text-align: left; }
   .neg { color: #c00; font-weight: 600; }
+  .sub { display: block; font-size: 8px; color: #666; font-weight: 400; }
+  .sub.neg { color: #c00; font-weight: 600; }
   .label { text-align: left; font-weight: 600; background: #f7f8fa; }
   .muted { color: #777; font-weight: 400; }
+  .folder-title { font-size: 13px; background: #e8eefc; border: 1px solid #c8d6f5; padding: 5px 8px; border-radius: 4px; margin: 18px 0 6px; }
   .group { page-break-inside: auto; }
   @page { size: A4 landscape; margin: 12mm; }
 </style>

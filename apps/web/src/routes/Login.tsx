@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useRouter } from '@tanstack/react-router';
 import { useAuthStore } from '../stores/authStore';
+import { API_URL } from '../lib/api';
 import { Eye, EyeOff } from 'lucide-react';
 
 
@@ -19,8 +20,9 @@ export function Login() {
     setError('');
 
     try {
-      // In fetchApi, auth header won't be sent if not logged in
-      const data = await fetch('http://localhost:3001/api/v1/auth/login', {
+      // Sengaja pakai fetch biasa, bukan fetchApi: fetchApi otomatis redirect
+      // saat status 401 sehingga pesan "Invalid credentials" ikut hilang.
+      const data = await fetch(`${API_URL}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),

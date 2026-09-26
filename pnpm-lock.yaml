@@ -55,6 +55,9 @@ importers:
       pino-pretty:
         specifier: ^10.3.1
         version: 10.3.1
+      prisma:
+        specifier: ^5.9.1
+        version: 5.22.0
       web-push:
         specifier: ^3.6.7
         version: 3.6.7
@@ -77,9 +80,6 @@ importers:
       '@types/web-push':
         specifier: ^3.6.3
         version: 3.6.4
-      prisma:
-        specifier: ^5.9.1
-        version: 5.22.0
       supertest:
         specifier: ^6.3.4
         version: 6.3.4

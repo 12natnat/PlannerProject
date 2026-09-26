@@ -35,8 +35,9 @@ model User {
   notifications Notification[]
   calculationHistories CalculationHistory[]
   fgStocks      FGStock[]
-  fgStockHistories FGStockHistory[]
+  fgStockHistory FGStockHistory[]
   wips          WIP[]
+  cycleAuditLogs CycleAuditLog[]
 
   @@index([email])
   @@index([role])
@@ -59,13 +60,37 @@ model Item {
   dailySchedules  DailySchedule[]
   weeklySchedules WeeklySchedule[]
   fgStocks        FGStock[]
-  fgStockHistories FGStockHistory[]
+  fgStockHistory  FGStockHistory[]
   wips            WIP[]
   masterCartons   MasterCarton[]
 
   @@index([partNumber])
   @@index([itemName])
   @@map("items")
+}
+
+// Riwayat pergerakan stok barang jadi.
+// Model ini sempat hilang dari schema padahal route `fgStockHistory.ts` masih
+// memakainya, sehingga build gagal begitu Prisma Client di-generate ulang.
+model FGStockHistory {
+  id        String   @id @default(cuid())
+  itemId    String
+  inQty     Float    @default(0)
+  outQty    Float    @default(0)
+  balance   Float
+  type      String
+  date      DateTime @db.Date
+  notes     String?  @db.Text
+  createdBy String
+  createdAt DateTime @default(now())
+
+  // Relations
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [createdBy], references: [id])
+
+  @@index([itemId])
+  @@index([date])
+  @@map("fg_stock_history")
 }
 
 model MasterCarton {
@@ -148,26 +173,6 @@ model FGStock {
   @@index([itemId])
   @@index([date])
   @@map("fg_stocks")
-}
-
-model FGStockHistory {
-  id        String   @id @default(cuid())
-  itemId    String
-  inQty     Float    @default(0)
-  outQty    Float    @default(0)
-  balance   Float
-  type      String
-  date      DateTime @db.Date
-  notes     String?  @db.Text
-  createdBy String
-  createdAt DateTime @default(now())
-
-  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [createdBy], references: [id])
-
-  @@index([itemId])
-  @@index([date])
-  @@map("fg_stock_history")
 }
 
 // ============================================
@@ -380,4 +385,217 @@ model CalculationSourceSnapshot {
   @@unique([historyId, sourceType])
   @@index([sourceType])
   @@map("calculation_source_snapshots")
+}
+
+// ============================================
+// PLANNING CYCLE (Material Planning)
+// ============================================
+// Satu cycle = satu periode bulanan yang TERISOLASI penuh dari cycle lain.
+// Semua tabel data wajib punya cycleId (NOT NULL) dan semua @@unique SELALU
+// diawali cycleId, supaya tidak mungkin ada unique global yang bocor antar periode.
+
+enum CycleStatus {
+  DRAFT // data sedang disiapkan, belum dihitung
+  CALCULATED // minimal sudah dihitung sekali (TETAP boleh diedit)
+}
+
+model PlanningCycle {
+  id String @id @default(cuid())
+
+  // ── Identitas BERBASIS BATCH UPLOAD, bukan tanggal di dalam data ──
+  uploadMonth String // "2026-09" — otomatis dari waktu upload
+  label       String @unique // "September 2026" — otomatis, bisa diedit
+  status      CycleStatus @default(DRAFT)
+
+  // ── Metadata deskriptif dari file MRP (untuk tampilan & perhitungan) ──
+  mrpStartDate DateTime @db.Date
+  mrpEndDate   DateTime @db.Date
+  weekCount    Int      @default(26)
+
+  // ── Jejak waktu ──
+  firstUploadedAt    DateTime  @default(now())
+  lastUploadedAt     DateTime  @default(now())
+  lastDataChangeAt   DateTime  @default(now())
+  calculatedAt       DateTime?
+  calculatedBy       String?
+  calculatedRunCount Int       @default(0)
+
+  // ── Kunci manual (opsional, default OFF) ──
+  isLocked Boolean   @default(false)
+  lockedAt DateTime?
+  lockedBy String?
+  lockNote String?   @db.Text
+
+  // ── Retensi 18 bulan ──
+  retentionDueAt      DateTime?
+  retentionNotifiedAt DateTime?
+
+  notes     String?  @db.Text
+  createdAt DateTime @default(now())
+  createdBy String
+
+  mrpWeeks  CycleMRPWeek[]
+  hotlists  CycleHotlist[]
+  stocks    CycleStockRM[]
+  pos       CycleOutstandingPO[]
+  wips      CycleWIP[]
+  uploads   CycleSourceUpload[]
+  results   CycleResult[]
+  auditLogs CycleAuditLog[]
+  // Catatan: TIDAK ada relasi ke NPOF — dipakai bersama semua periode.
+
+  @@unique([uploadMonth])
+  @@index([status])
+  @@index([createdAt])
+  @@map("planning_cycles")
+}
+
+// Jejak setiap upload (menjawab "kapan data diupload").
+model CycleSourceUpload {
+  id         String   @id @default(cuid())
+  cycleId    String
+  sourceType String // MRP | HOTLIST | STOCK_RM | OUTSTANDING_PO | WIP
+  fileName   String?
+  rowCount   Int      @default(0)
+  mode       String? // replace | append (hanya di dalam cycle ini)
+  uploadedAt DateTime @default(now())
+  uploadedBy String
+
+  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@index([cycleId, sourceType])
+  @@index([uploadedAt])
+  @@map("cycle_source_uploads")
+}
+
+// MRP 26 minggu. weekNumber 1..26 relatif terhadap file MRP yang diupload.
+model CycleMRPWeek {
+  id            String   @id @default(cuid())
+  cycleId       String
+  partNumber    String
+  description   String?
+  year          Int
+  weekNumber    Int
+  weekStartDate DateTime @db.Date
+  weekEndDate   DateTime @db.Date
+  quantity      Float
+
+  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@unique([cycleId, partNumber, year, weekNumber])
+  @@index([cycleId, weekStartDate])
+  @@index([cycleId, partNumber])
+  @@map("cycle_mrp_weeks")
+}
+
+model CycleHotlist {
+  id         String @id @default(cuid())
+  cycleId    String
+  partNumber String
+  biTotal    Float
+
+  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@unique([cycleId, partNumber])
+  @@map("cycle_hotlists")
+}
+
+// Stock Raw Material — SEMUA lot disimpan, bukan hanya yang terbaru.
+model CycleStockRM {
+  id       String   @id @default(cuid())
+  cycleId  String
+  itemDesc String
+  supplier String?
+  qty      Float
+  unit     String
+  date     DateTime @db.Date
+
+  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@index([cycleId, itemDesc, supplier])
+  @@map("cycle_stock_rm")
+}
+
+model CycleOutstandingPO {
+  id               String   @id @default(cuid())
+  cycleId          String
+  itemDesc         String
+  supplierName     String
+  qtyOrder         Float
+  qtyOrderUnit     String
+  qtyDelivered     Float
+  qtyDeliveredUnit String
+  planReceivedDate DateTime @db.Date
+
+  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@index([cycleId, itemDesc, supplierName])
+  @@map("cycle_outstanding_po")
+}
+
+model CycleWIP {
+  id         String @id @default(cuid())
+  cycleId    String
+  partNumber String
+  location   String
+  quantity   Float
+
+  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@unique([cycleId, partNumber, location])
+  @@map("cycle_wips")
+}
+
+// Hasil kalkulasi: SATU BARIS PER RUN (mendukung simpan versi).
+model CycleResult {
+  id              String   @id @default(cuid())
+  cycleId         String
+  runNumber       Int
+  periodStartDate DateTime @db.Date
+  periodEndDate   DateTime @db.Date
+  periodWeeks     Int
+  calculatedAt    DateTime
+  calculatedBy    String
+  /// Nilai PlanningCycle.lastDataChangeAt saat perhitungan dijalankan.
+  /// Kalau lastDataChangeAt > dataVersionAt berarti hasil sudah STALE.
+  dataVersionAt   DateTime
+
+  /// Tepat satu baris per periode yang isCurrent = true.
+  isCurrent       Boolean  @default(false)
+  /// isSaved = true -> baris ini TIDAK dihapus saat ada perhitungan baru.
+  isSaved         Boolean  @default(false)
+  savedNote       String?  @db.Text
+
+  resultSnapshot  Json // groups + weeklyMatrix 26 kolom
+  summarySnapshot Json?
+
+  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@unique([cycleId, runNumber])
+  @@index([cycleId, isCurrent])
+  @@index([cycleId, isSaved])
+  @@map("cycle_results")
+}
+
+// Jejak perubahan di dalam periode (siapa mengubah apa).
+model CycleAuditLog {
+  id         String      @id @default(cuid())
+  cycleId    String
+  userId     String
+  action     AuditAction
+  sourceType String? // MRP | HOTLIST | STOCK_RM | OUTSTANDING_PO | WIP | CYCLE
+  entityType String
+  entityId   String?
+  dataBefore Json?
+  dataAfter  Json?
+  notes      String?     @db.Text
+  createdAt  DateTime    @default(now())
+
+  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  user  User          @relation(fields: [userId], references: [id])
+
+  @@index([cycleId, createdAt])
+  @@index([cycleId, sourceType])
+  @@index([userId])
+  @@map("cycle_audit_logs")
 }

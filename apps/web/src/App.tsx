@@ -5,6 +5,7 @@ import { Layout } from './components/layout/Layout';
 import { Dashboard } from './routes/Dashboard';
 import { Login } from './routes/Login';
 import { useAuthStore } from './stores/authStore';
+import { isFeatureEnabled } from './lib/features';
 import './index.css';
 
 const queryClient = new QueryClient();
@@ -76,6 +77,11 @@ import { MaterialCalc } from './routes/MaterialCalc';
 const materialCalcRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/material-calculation',
+  beforeLoad: () => {
+    // Menu ini disembunyikan saat flag mati, jadi URL-nya ikut dikunci
+    // supaya tetap bisa diakses hanya lewat alat uji (mis. Postman).
+    if (!isFeatureEnabled('materialCalculation')) throw redirect({ to: '/' });
+  },
   component: MaterialCalc,
 });
 

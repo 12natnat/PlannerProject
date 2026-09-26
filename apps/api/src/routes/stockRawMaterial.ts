@@ -1,5 +1,6 @@
 ﻿import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
+import { config } from '../config';
 import { authenticate } from '../middleware/auth';
 import * as xlsx from 'xlsx';
 
@@ -10,6 +11,125 @@ export default async function stockRawMaterialRoutes(server: FastifyInstance) {
       orderBy: { date: 'desc' },
     });
     return reply.send({ data });
+  });
+
+  /**
+   * Ringkasan stok: total per itemDesc + supplier, beserta JUMLAH LOT.
+   *
+   * Tabel stok menyimpan satu baris per lot, sehingga tampilan lama membuat
+   * user mengira jumlahnya sedikit. Endpoint ini memperlihatkan total sebenarnya
+   * sekaligus berapa lot yang menyusunnya (rancangan §8.6).
+   */
+  server.get('/api/v1/stock-raw-material/summary', { preValidation: [authenticate] }, async (_request, reply) => {
+    const stocks = await prisma.stockRawMaterial.findMany({
+      select: { itemDesc: true, supplier: true, qty: true, unit: true, date: true },
+    });
+
+    const map = new Map<
+      string,
+      {
+        itemDesc: string;
+        supplier: string;
+        kg: number;
+        sheet: number;
+        rim: number;
+        lots: number;
+        firstDate: Date | null;
+        lastDate: Date | null;
+        unknownUnits: Set<string>;
+      }
+    >();
+
+    const SHEET_UNIT_LIST = ['sheet', 'sheets', 'sht', 'lbr', 'lembar'];
+    const RIM_UNIT_LIST = ['rim', 'ream'];
+
+    for (const s of stocks) {
+      const key = `${s.itemDesc}||${s.supplier || ''}`;
+      const agg =
+        map.get(key) ||
+        {
+          itemDesc: s.itemDesc,
+          supplier: s.supplier || '',
+          kg: 0,
+          sheet: 0,
+          rim: 0,
+          lots: 0,
+          firstDate: null as Date | null,
+          lastDate: null as Date | null,
+          unknownUnits: new Set<string>(),
+        };
+
+      const rawUnit = String(s.unit || '').trim();
+      const unit = rawUnit.toLowerCase();
+      if (SHEET_UNIT_LIST.includes(unit)) {
+        agg.sheet += s.qty;
+      } else if (RIM_UNIT_LIST.includes(unit)) {
+        agg.rim += s.qty;
+        agg.sheet += s.qty * config.materialCalc.sheetsPerRim;
+      } else if (unit === 'kg') {
+        agg.kg += s.qty;
+      } else {
+        // Satuan kosong / tidak dikenal. Sementara diperlakukan sebagai kg
+        // (meniru perilaku lama), TAPI dilaporkan lewat `unknownUnits` supaya
+        // user sadar ada baris yang satuannya perlu dibetulkan.
+        agg.kg += s.qty;
+        agg.unknownUnits.add(rawUnit === '' ? '(kosong)' : rawUnit);
+      }
+
+      agg.lots += 1;
+      const d = new Date(s.date);
+      if (!agg.firstDate || d < agg.firstDate) agg.firstDate = d;
+      if (!agg.lastDate || d > agg.lastDate) agg.lastDate = d;
+      map.set(key, agg);
+    }
+
+    const data = [...map.values()]
+      .map((a) => ({
+        itemDesc: a.itemDesc,
+        supplier: a.supplier,
+        lots: a.lots,
+        totalKg: a.kg,
+        totalSheet: a.sheet,
+        totalRim: a.rim,
+        primaryUnit: a.kg > 0 ? ('kg' as const) : ('sheet' as const),
+        firstDate: a.firstDate,
+        lastDate: a.lastDate,
+        /** Satuan yang tidak dikenali pada grup ini; angkanya sementara dihitung sebagai kg. */
+        unknownUnits: [...a.unknownUnits],
+        hasUnknownUnit: a.unknownUnits.size > 0,
+      }))
+      .sort((x, y) => y.totalKg + y.totalSheet - (x.totalKg + x.totalSheet));
+
+    return reply.send({ data, sheetsPerRim: config.materialCalc.sheetsPerRim });
+  });
+
+  /** Detail per lot untuk satu itemDesc + supplier. */
+  server.get('/api/v1/stock-raw-material/lots', { preValidation: [authenticate] }, async (request, reply) => {
+    const { itemDesc, supplier } = request.query as { itemDesc?: string; supplier?: string };
+    if (!itemDesc) {
+      return reply.code(400).send({ error: 'Bad Request', message: 'itemDesc wajib diisi' });
+    }
+
+    // `supplier` kosong harus cocok dengan baris NULL **maupun** string kosong,
+    // karena data nyata memakai keduanya. Kalau parameter tidak dikirim sama
+    // sekali, tampilkan semua lot untuk item tersebut.
+    const supplierFilter =
+      supplier === undefined
+        ? {}
+        : supplier === ''
+          ? { OR: [{ supplier: null }, { supplier: '' }] }
+          : { supplier };
+
+    const data = await prisma.stockRawMaterial.findMany({
+      where: { itemDesc, ...supplierFilter },
+      orderBy: { date: 'desc' },
+    });
+
+    return reply.send({
+      data,
+      lots: data.length,
+      total: data.reduce((sum, r) => sum + r.qty, 0),
+    });
   });
 
   // Upload Excel

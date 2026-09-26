@@ -3,6 +3,7 @@ import { LayoutDashboard, Activity, Users, Bell, LogOut, Settings, CalendarClock
 import { cn } from '../../lib/utils';
 import { useAuthStore } from '../../stores/authStore';
 import type { ModuleName } from '../../stores/authStore';
+import { isFeatureEnabled, type FeatureName } from '../../lib/features';
 import { useNavigationStore } from '../../stores/navigationStore';
 import { useEffect, useState } from 'react';
 
@@ -20,6 +21,8 @@ interface MenuItem {
   badge?: string;
   adminOnly?: boolean;
   superAdminOnly?: boolean;
+  /** Nama feature flag. Menu disembunyikan kalau flag-nya mati. */
+  feature?: FeatureName;
 }
 
 const SIDEBAR_MENUS: Record<ModuleName, MenuItem[]> = {
@@ -31,7 +34,7 @@ const SIDEBAR_MENUS: Record<ModuleName, MenuItem[]> = {
     { name: 'Finish Good Inventory', path: '/fg-stock', icon: Box },
   ],
   material: [
-    { name: 'Material Calculation', path: '/material-calculation', icon: Calculator },
+    { name: 'Material Calculation', path: '/material-calculation', icon: Calculator, feature: 'materialCalculation' },
     { name: 'Raw Material Stock', path: '/stock-raw-material', icon: FileSpreadsheet },
   ],
   masterdata: [
@@ -82,6 +85,7 @@ export function Layout() {
 
   // Filter menu items based on roles and master data dropdown filter
   const currentMenuItems = SIDEBAR_MENUS[activeModule].filter(item => {
+    if (item.feature && !isFeatureEnabled(item.feature)) return false;
     if (item.superAdminOnly && user?.role !== 'SUPER_ADMIN') return false;
     if (item.adminOnly && (user?.role !== 'SUPER_ADMIN' && user?.role !== 'PRODUCTION_PLANNER')) return false;
 
@@ -99,9 +103,21 @@ export function Layout() {
 
   const isViewOnly = !canEdit(activeModule);
 
+  const getVisibleMenuItems = (modId: ModuleName) => {
+    return SIDEBAR_MENUS[modId].filter(item => {
+      if (item.feature && !isFeatureEnabled(item.feature)) return false;
+      if (item.superAdminOnly && user?.role !== 'SUPER_ADMIN') return false;
+      if (item.adminOnly && (user?.role !== 'SUPER_ADMIN' && user?.role !== 'PRODUCTION_PLANNER')) return false;
+      return true;
+    });
+  };
+
   const handleModuleChange = (modId: ModuleName) => {
     setActiveModule(modId);
-    const firstItem = SIDEBAR_MENUS[modId]?.[0];
+    // Gunakan menu pertama yang benar-benar terlihat (lolos feature flag & role check),
+    // bukan index [0] mentah, supaya menu yang dimatikan tidak memicu redirect ke /
+    const visibleItems = getVisibleMenuItems(modId);
+    const firstItem = visibleItems[0];
     if (firstItem) {
       router.navigate({ to: firstItem.path });
     }

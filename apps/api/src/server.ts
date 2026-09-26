@@ -18,9 +18,11 @@ import stockRawMaterialRoutes from './routes/stockRawMaterial';
 import outstandingPoRoutes from './routes/outstandingPo';
 import npofMaterialsRoutes from './routes/npofMaterials';
 import materialCalcRoutes from './routes/materialCalc';
+import materialPlanningRoutes from './routes/materialPlanning';
 import historyRoutes from './routes/history';
 import fgStockHistoryRoutes from './routes/fgStockHistory';
 import { startCleanupSchedule, stopCleanupSchedule } from './lib/cleanup';
+import { bootstrapAdmin } from './lib/bootstrapAdmin';
 import multipart from '@fastify/multipart';
 
 const server = Fastify({
@@ -83,6 +85,7 @@ async function registerPlugins() {
   await server.register(outstandingPoRoutes);
   await server.register(npofMaterialsRoutes);
   await server.register(materialCalcRoutes);
+  await server.register(materialPlanningRoutes);
   await server.register(historyRoutes);
   await server.register(fgStockHistoryRoutes);
 }
@@ -153,6 +156,9 @@ server.get('/', async (request, reply) => {
 async function start() {
   try {
     await registerPlugins();
+
+    // Buat akun admin pertama bila database masih kosong (lihat lib/bootstrapAdmin.ts).
+    await bootstrapAdmin();
 
     await server.listen({
       port: config.port,
