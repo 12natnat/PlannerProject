@@ -1,7 +1,13 @@
 import { config as loadEnv } from 'dotenv';
+import path from 'path';
 
-// Load environment variables
-loadEnv();
+// Di development, ambil variabel dari .env di root monorepo.
+// Di production JANGAN: variabel sudah disuntikkan oleh platform (Dokploy).
+// `override: true` juga sengaja dihapus — kalau tidak, variabel dari platform
+// bisa tertimpa oleh file .env yang tanpa sengaja ikut terbawa ke image.
+if (process.env.NODE_ENV !== 'production') {
+  loadEnv({ path: path.resolve(__dirname, '../../../../.env') });
+}
 
 export const config = {
   // Server
@@ -37,6 +43,33 @@ export const config = {
     wip: 120, // 2 minutes
     tracking: 120, // 2 minutes
     items: 1800, // 30 minutes
+  },
+
+  // NPOF External API
+  npofApi: {
+    url: process.env.NPOF_API_URL || 'http://127.0.0.1:8008',
+    key: process.env.NPOF_API_KEY || '',
+  },
+
+  // Akun SUPER_ADMIN pertama untuk database yang masih kosong (VPS/Dokploy).
+  // Dibiarkan kosong = fitur dilewati. Lihat src/lib/bootstrapAdmin.ts.
+  bootstrapAdmin: {
+    email: process.env.ADMIN_EMAIL || '',
+    password: process.env.ADMIN_PASSWORD || '',
+  },
+
+  // Parameter perhitungan material.
+  materialCalc: {
+    // Toleransi ukuran saat mencocokkan stok ke kebutuhan, dalam cm.
+    sizeToleranceCm: parseInt(process.env.MATERIAL_SIZE_TOLERANCE_CM || '2', 10),
+    // 1 rim dihitung 500 lembar. Dipakai untuk Outstanding PO bersatuan "rim".
+    sheetsPerRim: parseInt(process.env.SHEETS_PER_RIM || '500', 10),
+    // Apakah supplier harus sama agar stok/PO dianggap cocok.
+    // false (default) = hanya gramatur + ukuran yang menentukan. Ini yang sesuai
+    //   dengan hasil validasi "29 dari 98 part" pada rancangan.
+    // true = hasil turun menjadi 13 part, karena supplier di NPOF berupa nama
+    //   panjang ("Hanchang Paper") sedangkan di stok berupa kode ("HANCHANG").
+    requireSupplierMatch: (process.env.MATERIAL_REQUIRE_SUPPLIER || 'false').toLowerCase() === 'true',
   },
 };
 

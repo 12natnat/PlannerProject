@@ -17,8 +17,8 @@ export function Dashboard() {
     return data.gapAnalysis.filter((item) => {
       // 1. Search Query Filter (Part Number or Name)
       const matchesSearch =
-        item.partNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.description.toLowerCase().includes(searchQuery.toLowerCase());
+        item.itemCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.itemName.toLowerCase().includes(searchQuery.toLowerCase());
 
       // 2. Urgent / Shortage Only Filter
       const matchesUrgent = !showUrgentOnly || item.status === 'SHORTAGE' || item.status === 'IN_PRODUCTION';
@@ -38,8 +38,8 @@ export function Dashboard() {
       : data.gapAnalysis;
 
     const filtered = baseList.filter((item) =>
-      item.partNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.description.toLowerCase().includes(searchQuery.toLowerCase())
+      item.itemCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      item.itemName.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
     const fulfilled = filtered.filter(i => i.status === 'FULFILLED').length;
@@ -56,7 +56,7 @@ export function Dashboard() {
 
   const chartData = useMemo(() => {
     return filteredGapAnalysis.map(item => ({
-      name: item.partNumber,
+      name: item.itemCode,
       demand: item.demand,
       fgStock: item.fgStock,
       wip: item.wip,
@@ -228,9 +228,9 @@ export function Dashboard() {
                     const itemWipDetails = data?.wipStatus?.filter((w: any) => w.partNumber === item.partNumber && w.qty > 0).map((w: any) => ({ location: w.location, quantity: w.qty })) || [];
                     
                     return (
-                      <tr key={`${item.partNumber}-${idx}`} className="hover:bg-muted/50 transition-colors">
-                        <td className="px-6 py-4 font-semibold text-foreground">{item.partNumber}</td>
-                        <td className="px-6 py-4 max-w-[240px] truncate" title={item.description}>{item.description}</td>
+                      <tr key={`${item.itemCode}-${idx}`} className="hover:bg-muted/50 transition-colors">
+                        <td className="px-6 py-4 font-semibold text-foreground">{item.itemCode}</td>
+                        <td className="px-6 py-4 max-w-[240px] truncate" title={item.itemName}>{item.itemName}</td>
                         <td className="px-6 py-4 text-right font-medium">{item.demand.toLocaleString()}</td>
                         <td className="px-6 py-4 text-right font-medium text-green-600 dark:text-green-500">{item.fgStock.toLocaleString()}</td>
                         <td className="px-6 py-4 text-right font-bold text-rose-600 dark:text-rose-400 bg-rose-500/5">

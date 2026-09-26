@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useWeeklyScheduleSummary, useBulkUpsertWeeklySchedule, useUpdateWeeklySchedule, useDeleteWeeklySchedule, useBulkDeleteWeeklySchedule } from '../hooks/useWeeklySchedule';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
-import { Upload, Search, Save, Plus, CalendarRange, Trash2, ChevronLeft, ChevronRight, Calendar, Edit2, Layers, Package } from 'lucide-react';
+import { Upload, Search, Save, Plus, CalendarRange, Trash2, ChevronLeft, ChevronRight, Calendar, Edit2, Folder, ArrowLeft } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useAuthStore } from '../stores/authStore';
 
@@ -34,7 +34,7 @@ interface ImportWeekData {
 
 interface ImportRow {
   id: string;
-  partNumber: string;
+  itemCode: string;
   description: string;
   weeks: ImportWeekData[];
   total: number;
@@ -87,9 +87,9 @@ function parse26WeekExcel(ws: XLSX.WorkSheet): { rows: ImportRow[]; year: number
   for (let r = headerRow + 1; r <= range.e.r; r++) {
     const cellPN = ws[XLSX.utils.encode_cell({ r, c: 0 })];
     const cellDesc = ws[XLSX.utils.encode_cell({ r, c: 1 })];
-    const partNumber = cellPN ? String(cellPN.v).trim() : '';
+    const itemCode = cellPN ? String(cellPN.v).trim() : '';
     const description = cellDesc ? String(cellDesc.v).trim() : '';
-    if (!partNumber || partNumber.toUpperCase() === 'PN' || partNumber.toLowerCase().includes('total')) continue;
+    if (!itemCode || itemCode.toUpperCase() === 'PN' || itemCode.toLowerCase().includes('total')) continue;
 
     const weeks: ImportWeekData[] = [];
     let rowTotal = 0;
@@ -103,7 +103,7 @@ function parse26WeekExcel(ws: XLSX.WorkSheet): { rows: ImportRow[]; year: number
     }
     if (weeks.length === 0) continue;
     idCounter++;
-    rows.push({ id: `r-${idCounter}`, partNumber, description, weeks, total: Math.round(rowTotal) });
+    rows.push({ id: `r-${idCounter}`, itemCode, description, weeks, total: Math.round(rowTotal) });
   }
   return { rows, year };
 }
@@ -124,6 +124,7 @@ export function WeeklyDemand() {
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
   const [importYear, setImportYear] = useState(currentYear);
   const [importSearch, setImportSearch] = useState('');
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   // Manual add form state — uses an actual start date so the entry lines up
   // with the dynamic W1-W26 view (relative to today).
@@ -276,17 +277,34 @@ export function WeeklyDemand() {
     }
   }, [showForm, availableWeeks]);
 
-  const visibleWeeks = useMemo(
-    () => allWeeks.slice(weekPage * WEEKS_PER_PAGE, (weekPage + 1) * WEEKS_PER_PAGE),
-    [allWeeks, weekPage],
-  );
+  const groupedMonths = useMemo(() => {
+    const groups: Record<string, number[]> = {};
+    allWeeks.forEach((w) => {
+      const startStr = weekStartByNumber[w];
+      if (!startStr) return;
+      const monthKey = startStr.substring(0, 7); // yyyy-MM
+      if (!groups[monthKey]) groups[monthKey] = [];
+      groups[monthKey].push(w);
+    });
+    return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [allWeeks, weekStartByNumber]);
+
+  const visibleWeeks = useMemo(() => {
+    if (selectedMonth === 'ALL') {
+      return allWeeks;
+    }
+    if (selectedMonth) {
+      return groupedMonths.find(g => g[0] === selectedMonth)?.[1] || [];
+    }
+    return allWeeks.slice(weekPage * WEEKS_PER_PAGE, (weekPage + 1) * WEEKS_PER_PAGE);
+  }, [allWeeks, weekPage, selectedMonth, groupedMonths]);
   const totalPages = useMemo(() => Math.ceil(allWeeks.length / WEEKS_PER_PAGE), [allWeeks]);
 
   const filteredData = useMemo(() => {
     if (!search) return allData;
     const q = search.toLowerCase();
     return allData.filter(
-      (row) => row.partNumber.toLowerCase().includes(q) || row.description.toLowerCase().includes(q),
+      (row) => row.itemCode.toLowerCase().includes(q) || row.itemName.toLowerCase().includes(q),
     );
   }, [allData, search]);
 
@@ -344,7 +362,7 @@ export function WeeklyDemand() {
           weekEndDate: w.weekStartDate
             ? new Date(new Date(w.weekStartDate).getTime() + 6 * 86400000).toISOString().split('T')[0]
             : undefined,
-          partNumber: row.partNumber,
+          itemCode: row.itemCode,
           description: row.description,
           quantity: w.quantity,
         });
@@ -363,11 +381,11 @@ export function WeeklyDemand() {
   const filteredImport = importRows.filter((r) => {
     if (!importSearch) return true;
     const q = importSearch.toLowerCase();
-    return r.partNumber.toLowerCase().includes(q) || r.description.toLowerCase().includes(q);
+    return r.itemCode.toLowerCase().includes(q) || r.description.toLowerCase().includes(q);
   });
 
   const importSummary = useMemo(() => {
-    const parts = new Set(importRows.map((r) => r.partNumber));
+    const parts = new Set(importRows.map((r) => r.itemCode));
     const total = importRows.reduce((a, r) => a + r.total, 0);
     const weeks = new Set(importRows.flatMap((r) => r.weeks.map((w) => w.weekNumber)));
     return { parts: parts.size, total, weeks: weeks.size };
@@ -402,8 +420,8 @@ export function WeeklyDemand() {
         weekNumber: isoWeek,
         weekStartDate: formatLocal(start),
         weekEndDate: formatLocal(end),
-        partNumber: (item as any).partNumber,
-        description: (item as any).description,
+        itemCode: (item as any).itemCode,
+        description: (item as any).itemName,
         quantity: formData.quantity,
       });
     }
@@ -444,54 +462,6 @@ export function WeeklyDemand() {
         </div>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm flex justify-between items-start">
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-muted-foreground">Total Part Number</p>
-            <h3 className="text-3xl font-bold tracking-tight text-blue-600 dark:text-blue-400">
-              {allData.length}
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Total unique items with demand plan.
-            </p>
-          </div>
-          <div className="p-2 bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 rounded-md">
-            <Layers size={20} />
-          </div>
-        </div>
-
-        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm flex justify-between items-start">
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-muted-foreground">Total Quantity</p>
-            <h3 className="text-3xl font-bold tracking-tight text-green-600 dark:text-green-400">
-              {allData.reduce((acc, row) => acc + row.total, 0).toLocaleString()}
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Total demand quantity across all weeks.
-            </p>
-          </div>
-          <div className="p-2 bg-green-50 dark:bg-green-950 text-green-600 dark:text-green-400 rounded-md">
-            <Package size={20} />
-          </div>
-        </div>
-
-        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm flex justify-between items-start">
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-muted-foreground">Weeks with Demand</p>
-            <h3 className="text-3xl font-bold tracking-tight text-orange-600 dark:text-orange-400">
-              {allWeeks.length}
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Total weeks containing production demand.
-            </p>
-          </div>
-          <div className="p-2 bg-orange-50 dark:bg-orange-950 text-orange-600 dark:text-orange-400 rounded-md">
-            <Calendar size={20} />
-          </div>
-        </div>
-      </div>
-
       {/* Manual Add Form */}
       {showForm && (
         <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
@@ -506,7 +476,7 @@ export function WeeklyDemand() {
                 onChange={(val) => setFormData({ ...formData, itemId: val })}
                 onAdd={async (search) => {
                   try {
-                    const res = await createItem.mutateAsync({ partNumber: search, description: search, unit: 'PCS' }) as any;
+                    const res = await createItem.mutateAsync({ partNumber: search, itemName: search, unit: 'PCS' }) as any;
                     if (res?.data?.id) setFormData(f => ({ ...f, itemId: res.data.id }));
                   } catch (e: any) { alert(e.message); }
                 }}
@@ -516,13 +486,13 @@ export function WeeklyDemand() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Description</label>
               <SearchableSelect
-                options={items.filter((i: any) => i.partNumber !== i.description).map((i: any) => ({ value: i.id, label: i.description }))}
+                options={items.filter((i: any) => i.partNumber !== i.itemName).map((i: any) => ({ value: i.id, label: i.itemName }))}
                 value={formData.itemId}
                 onChange={(val) => setFormData({ ...formData, itemId: val })}
                 onAdd={async (search) => {
                   try {
                     const code = `PN-${Date.now().toString().slice(-5)}`;
-                    const res = await createItem.mutateAsync({ partNumber: code, description: search, unit: 'PCS' }) as any;
+                    const res = await createItem.mutateAsync({ partNumber: code, itemName: search, unit: 'PCS' }) as any;
                     if (res?.data?.id) setFormData(f => ({ ...f, itemId: res.data.id }));
                   } catch (e: any) { alert(e.message); }
                 }}
@@ -565,8 +535,72 @@ export function WeeklyDemand() {
         </div>
       )}
 
-      {/* Main Table */}
-      <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
+      {/* Folder View or Table View */}
+      {!selectedMonth ? (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in zoom-in-95 duration-200">
+          {groupedMonths.length === 0 && !isLoading && (
+            <div className="col-span-full py-12 text-center text-muted-foreground border rounded-lg bg-card shadow-sm">
+              <CalendarRange className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
+              <p className="text-base font-semibold">Tidak ada data Demand Plan</p>
+              <p className="text-sm mt-1">Upload excel atau isi demand untuk menambahkan data.</p>
+            </div>
+          )}
+          {allWeeks.length > 0 && (
+            <div
+              onClick={() => setSelectedMonth('ALL')}
+              className="cursor-pointer p-5 border-2 border-indigo-500/30 bg-gradient-to-br from-indigo-500/5 to-purple-500/10 hover:from-indigo-500/10 hover:to-purple-500/20 hover:border-indigo-500/60 rounded-lg transition-all flex items-center gap-4 group shadow-sm relative overflow-hidden"
+            >
+              <div className="p-3 bg-indigo-500/15 rounded-lg group-hover:bg-indigo-500/25 transition-colors">
+                <Folder className="w-8 h-8 text-indigo-600 dark:text-indigo-400 fill-indigo-500/20" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-bold text-foreground group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                    Semua Periode
+                  </h3>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 uppercase tracking-wider">
+                    All
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">{allWeeks.length} Minggu (W{allWeeks[0]} - W{allWeeks[allWeeks.length - 1]})</p>
+              </div>
+            </div>
+          )}
+          {groupedMonths.map(([monthKey, monthWeeks]) => (
+            <div
+              key={monthKey}
+              onClick={() => setSelectedMonth(monthKey)}
+              className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
+            >
+              <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
+                <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-foreground">
+                  {new Date(monthKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+                </h3>
+                <p className="text-xs text-muted-foreground mt-0.5">{monthWeeks.length} Minggu (W{monthWeeks[0]} - W{monthWeeks[monthWeeks.length - 1]})</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+      <>
+        <div className="flex items-center gap-3 mb-2 animate-in fade-in slide-in-from-bottom-2">
+          <button 
+            onClick={() => setSelectedMonth(null)}
+            className="p-2 hover:bg-background rounded-md border text-muted-foreground hover:text-foreground transition-colors shrink-0 bg-card"
+            title="Kembali ke Folder"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          <h3 className="font-semibold text-lg">
+            {selectedMonth === 'ALL' 
+              ? 'Semua Periode (26-Week Demand Plan)' 
+              : new Date(selectedMonth + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+          </h3>
+        </div>
+      <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
         {/* Filter bar */}
         <div className="p-4 border-b bg-muted/10 flex items-center gap-3">
           {isAdmin && selectedItemIds.length > 0 && (
@@ -589,7 +623,7 @@ export function WeeklyDemand() {
               onChange={(e) => { setSearch(e.target.value); setRowPage(0); }}
             />
           </div>
-          {allWeeks.length > 0 && (
+          {allWeeks.length > 0 && !selectedMonth && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span>Week {visibleWeeks[0]}–{visibleWeeks[visibleWeeks.length - 1]}</span>
               <button
@@ -670,9 +704,9 @@ export function WeeklyDemand() {
                         />
                       </td>
                     )}
-                    <td className={`px-4 py-3 font-medium sticky bg-card z-[5] ${isAdmin ? 'left-[48px]' : 'left-0'}`}>{row.partNumber}</td>
-                    <td className={`px-4 py-3 text-muted-foreground sticky bg-card z-[5] max-w-[180px] truncate ${isAdmin ? 'left-[178px]' : 'left-[130px]'}`} title={row.description}>
-                      {row.description}
+                    <td className={`px-4 py-3 font-medium sticky bg-card z-[5] ${isAdmin ? 'left-[48px]' : 'left-0'}`}>{row.itemCode}</td>
+                    <td className={`px-4 py-3 text-muted-foreground sticky bg-card z-[5] max-w-[180px] truncate ${isAdmin ? 'left-[178px]' : 'left-[130px]'}`} title={row.itemName}>
+                      {row.itemName}
                     </td>
                     {visibleWeeks.map((w) => {
                       const weekData = row.weeks?.[w];
@@ -691,8 +725,8 @@ export function WeeklyDemand() {
                                       isOpen: true,
                                       data: {
                                         id: weekData.id,
-                                        partNumber: row.partNumber,
-                                        description: row.description,
+                                        itemCode: row.itemCode,
+                                        itemName: row.itemName,
                                         weekNumber: w,
                                         quantity: qty,
                                       }
@@ -719,7 +753,7 @@ export function WeeklyDemand() {
                       );
                     })}
                     <td className="px-4 py-3 text-right font-bold text-primary">
-                      {row.total.toLocaleString()}
+                      {visibleWeeks.reduce((sum, w) => sum + (row.weeks?.[w]?.quantity || 0), 0).toLocaleString()}
                     </td>
                   </tr>
                 ))
@@ -753,6 +787,8 @@ export function WeeklyDemand() {
           </div>
         )}
       </div>
+      </>
+      )}
 
       {/* Import Modal */}
       {showImport && (
@@ -847,7 +883,7 @@ export function WeeklyDemand() {
                       <tbody className="divide-y divide-border">
                         {filteredImport.map((row) => (
                           <tr key={row.id} className="hover:bg-muted/40">
-                            <td className="px-4 py-2 font-medium">{row.partNumber}</td>
+                            <td className="px-4 py-2 font-medium">{row.itemCode}</td>
                             <td className="px-4 py-2 text-muted-foreground max-w-[200px] truncate" title={row.description}>
                               {row.description}
                             </td>
@@ -946,7 +982,7 @@ export function WeeklyDemand() {
             <form onSubmit={handleEditSubmit} className="space-y-4">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-muted-foreground">Part Number</label>
-                <div className="font-semibold">{editModal.data.partNumber} - {editModal.data.description}</div>
+                <div className="font-semibold">{editModal.data.itemCode} - {editModal.data.itemName}</div>
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-muted-foreground">Week</label>

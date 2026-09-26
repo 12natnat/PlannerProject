@@ -450,8 +450,8 @@ export function DailySchedule() {
       if (filterShift && s.shift !== Number(filterShift)) return false;
       if (!searchQuery) return true;
       const q = searchQuery.toLowerCase();
-      return s.item.partNumber.toLowerCase().includes(q) ||
-             s.item.description.toLowerCase().includes(q) ||
+            return s.item.itemCode.toLowerCase().includes(q) ||
+              s.item.itemName.toLowerCase().includes(q) ||
              (s.toyName && s.toyName.toLowerCase().includes(q)) ||
              (s.masterCarton && s.masterCarton.toLowerCase().includes(q)) ||
              s.date.toLowerCase().includes(q) ||
@@ -467,13 +467,13 @@ export function DailySchedule() {
     const groups: Record<string, any> = {};
     for (const schedule of filteredSchedules) {
       const dateStr = typeof schedule.date === 'string' ? schedule.date.split('T')[0] : new Date(schedule.date).toISOString().split('T')[0];
-      const key = `${dateStr}_${schedule.item.partNumber}_${schedule.masterCarton || ''}`;
+      const key = `${dateStr}_${schedule.item.itemCode}_${schedule.masterCarton || ''}`;
       if (!groups[key]) {
         groups[key] = {
           id: key,
           date: dateStr,
-          partNumber: schedule.item.partNumber,
-          toyName: schedule.toyName || schedule.item.description,
+          partNumber: schedule.item.itemCode,
+          toyName: schedule.toyName || schedule.item.itemName,
           masterCarton: schedule.masterCarton || '-',
           shift1: { id: null, quantity: 0 },
           shift2: { id: null, quantity: 0 },
@@ -502,9 +502,9 @@ export function DailySchedule() {
     if (!editModal.data) return;
     try {
       const records = [];
-      if (editModal.data.shift1Qty > 0) records.push({ date: editModal.data.date, shift: 1, partNumber: editModal.data.partNumber, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift1Qty });
-      if (editModal.data.shift2Qty > 0) records.push({ date: editModal.data.date, shift: 2, partNumber: editModal.data.partNumber, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift2Qty });
-      if (editModal.data.shift3Qty > 0) records.push({ date: editModal.data.date, shift: 3, partNumber: editModal.data.partNumber, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift3Qty });
+      if (editModal.data.shift1Qty > 0) records.push({ date: editModal.data.date, shift: 1, itemCode: editModal.data.partNumber, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift1Qty });
+      if (editModal.data.shift2Qty > 0) records.push({ date: editModal.data.date, shift: 2, itemCode: editModal.data.partNumber, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift2Qty });
+      if (editModal.data.shift3Qty > 0) records.push({ date: editModal.data.date, shift: 3, itemCode: editModal.data.partNumber, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift3Qty });
 
       if (editModal.data.ids && editModal.data.ids.length > 0) {
         await bulkDeleteSchedule.mutateAsync({ ids: editModal.data.ids });
@@ -560,7 +560,7 @@ export function DailySchedule() {
         records: [{
           date: formData.date,
           shift: Number(formData.shift),
-          partNumber: formData.partNumber,
+          itemCode: formData.partNumber,
           toyName: formData.toyName,
           masterCarton: formData.masterCarton,
           quantity: Number(formData.quantity),
@@ -647,7 +647,7 @@ export function DailySchedule() {
         records: importData.map(r => ({
           date: r.date,
           shift: r.shift,
-          partNumber: r.partNumber,
+          itemCode: r.partNumber,
           toyName: r.toyName,
           masterCarton: r.masterCarton,
           quantity: r.quantity,
@@ -818,7 +818,7 @@ export function DailySchedule() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Toy Name</label>
               <SearchableSelect
-                options={items.filter((item: any) => item.partNumber !== item.description).map((item: any) => ({ value: item.description, label: item.description }))}
+                options={items.filter((item: any) => item.itemCode !== item.itemName).map((item: any) => ({ value: item.itemName, label: item.itemName }))}
                 value={formData.toyName}
                 onChange={val => setFormData({...formData, toyName: val})}
                 onAdd={(search) => setFormData({...formData, toyName: search})}
@@ -835,7 +835,7 @@ export function DailySchedule() {
                   const mc = masterCartons.find((m: any) => m.cartonCode === val);
                   if (mc) {
                     const matchedToy = items.find((i: any) => i.id === mc.toyNameItemId);
-                    setFormData({...formData, masterCarton: val, partNumber: mc.partNumberCode, toyName: matchedToy ? matchedToy.description : formData.toyName});
+                    setFormData({...formData, masterCarton: val, partNumber: mc.partNumberCode, toyName: matchedToy ? matchedToy.itemName : formData.toyName});
                   } else {
                     setFormData({...formData, masterCarton: val});
                   }
@@ -848,7 +848,7 @@ export function DailySchedule() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Part Number</label>
               <SearchableSelect
-                options={items.map((item: any) => ({ value: item.partNumber, label: item.partNumber }))}
+                options={items.map((item: any) => ({ value: item.itemCode, label: item.itemCode }))}
                 value={formData.partNumber}
                 onChange={val => setFormData({...formData, partNumber: val})}
                 onAdd={(search) => setFormData({...formData, partNumber: search})}

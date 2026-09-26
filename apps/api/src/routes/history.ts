@@ -209,7 +209,7 @@ export default async function historyRoutes(server: FastifyInstance) {
       results.push({
         itemId: item.id,
         partNumber: item.partNumber,
-        description: item.description,
+        description: item.itemName,
         daily: dailyData,
         summary: {
           weeklyDemand: p.weeklyDemand,

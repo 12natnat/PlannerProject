@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchApi } from '../lib/api';
 import { format } from 'date-fns';
-import { Search, Filter, Loader2, ArrowUpCircle, ArrowDownCircle } from 'lucide-react';
+import { Search, Loader2, ArrowUpCircle, ArrowDownCircle } from 'lucide-react';
 import { useDebounce } from '../hooks/useDebounce';
 
 interface HistoryRecord {
