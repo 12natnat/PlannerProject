@@ -1,10 +1,20 @@
 import React, { useState, useMemo } from 'react';
 import { useWeeklyScheduleSummary, useBulkUpsertWeeklySchedule, useUpdateWeeklySchedule, useDeleteWeeklySchedule, useBulkDeleteWeeklySchedule } from '../hooks/useWeeklySchedule';
+import { usePeriods, useCreatePeriod, useUpdatePeriod, useDeletePeriod, monthLabel, MODULE_LABELS, type DataModule } from '../hooks/usePeriods';
+import { PeriodSelect } from '../components/PeriodSelect';
+import { PeriodMeta } from '../components/PeriodMeta';
+import { ModuleSelect } from '../components/ModuleSelect';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
-import { Upload, Search, Save, Plus, CalendarRange, Trash2, ChevronLeft, ChevronRight, Calendar, Edit2, Folder, ArrowLeft } from 'lucide-react';
-import * as XLSX from 'xlsx';
-import { useAuthStore } from '../stores/authStore';
+import { Upload, Search, Save, Plus, CalendarRange, Trash2, ChevronLeft, ChevronRight, Calendar, Edit2, Folder, ArrowLeft, Lock, CalendarPlus, Loader2, GitCompare, History, Info, FileSpreadsheet } from 'lucide-react';
+import { useAuthStore, lockedDataModule } from '../stores/authStore';
+import { localDateFromISO, type ImportRow } from '../lib/mrpWeekImport';
+import { parseMrpExcelFile } from '../lib/mrpParseWorker';
+import { usePreviewMrpVersion, useSaveMrpVersion, type MrpUploadRow } from '../hooks/useMrpVersions';
+import { ChangeSummaryCards } from '../components/mrp/ChangeSummaryCards';
+import { VersionCompareTable } from '../components/mrp/VersionCompareTable';
+import { UploadHistoryPanel } from '../components/mrp/UploadHistoryPanel';
+import { dateTimeLabel } from '../lib/mrpCompare';
 
 // Compute ISO week number / ISO year for a given date.
 // Used to build a unique (year, weekNumber) pair when manually adding demand.
@@ -25,96 +35,28 @@ function getNextSaturdayISO(): string {
   return d.toISOString().split('T')[0];
 }
 
-// ─── Excel Parser ────────────────────────────────────────────────────────────
-interface ImportWeekData {
-  weekNumber: number;
-  weekStartDate: string; // YYYY-MM-DD
-  quantity: number;
-}
-
-interface ImportRow {
-  id: string;
-  itemCode: string;
-  description: string;
-  weeks: ImportWeekData[];
-  total: number;
-}
-
-function excelSerialToDate(serial: number): string {
-  const utcDays = Math.floor(serial - 25569);
-  const d = new Date(utcDays * 86400 * 1000);
-  return d.toISOString().split('T')[0];
-}
-
-/**
- * Parse the 26-week demand Excel (26Weeks.xlsx format):
- *   Row 0: blank, blank, blank, 1, 2, 3 … 26  (week numbers at cols 3+)
- *   Row 1: "PN", "Description", "Total", date1, date2 … (Excel serial dates at cols 3+)
- *   Row 2+: itemCode, description, total, qty1, qty2 …
- */
-function parse26WeekExcel(ws: XLSX.WorkSheet): { rows: ImportRow[]; year: number } {
-  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-
-  // Find header row where col 0 = "PN"
-  let headerRow = -1;
-  for (let r = 0; r <= Math.min(10, range.e.r); r++) {
-    const cell = ws[XLSX.utils.encode_cell({ r, c: 0 })];
-    if (cell && String(cell.v).trim().toUpperCase() === 'PN') { headerRow = r; break; }
-  }
-  if (headerRow === -1) return { rows: [], year: new Date().getFullYear() };
-
-  // Week numbers are in the row ABOVE the header row (cols 3+)
-  const weekNumRow = headerRow > 0 ? headerRow - 1 : -1;
-
-  const weekColumns: { col: number; weekNumber: number; weekStartDate: string }[] = [];
-  for (let c = 3; c <= range.e.c; c++) {
-    const wCell = weekNumRow >= 0 ? ws[XLSX.utils.encode_cell({ r: weekNumRow, c })] : null;
-    const dCell = ws[XLSX.utils.encode_cell({ r: headerRow, c })];
-    if (!wCell || wCell.t !== 'n') continue;
-    const weekNum = Math.round(wCell.v);
-    if (weekNum < 1 || weekNum > 52) continue;
-    let startDate = '';
-    if (dCell && typeof dCell.v === 'number' && dCell.v > 40000) startDate = excelSerialToDate(dCell.v);
-    weekColumns.push({ col: c, weekNumber: weekNum, weekStartDate: startDate });
-  }
-
-  if (weekColumns.length === 0) return { rows: [], year: new Date().getFullYear() };
-  let year = new Date().getFullYear();
-  if (weekColumns[0].weekStartDate) year = parseInt(weekColumns[0].weekStartDate.split('-')[0]);
-
-  const rows: ImportRow[] = [];
-  let idCounter = 0;
-  for (let r = headerRow + 1; r <= range.e.r; r++) {
-    const cellPN = ws[XLSX.utils.encode_cell({ r, c: 0 })];
-    const cellDesc = ws[XLSX.utils.encode_cell({ r, c: 1 })];
-    const itemCode = cellPN ? String(cellPN.v).trim() : '';
-    const description = cellDesc ? String(cellDesc.v).trim() : '';
-    if (!itemCode || itemCode.toUpperCase() === 'PN' || itemCode.toLowerCase().includes('total')) continue;
-
-    const weeks: ImportWeekData[] = [];
-    let rowTotal = 0;
-    for (const wc of weekColumns) {
-      const qtyCell = ws[XLSX.utils.encode_cell({ r, c: wc.col })];
-      const qty = qtyCell && typeof qtyCell.v === 'number' ? qtyCell.v : 0;
-      if (qty > 0) {
-        weeks.push({ weekNumber: wc.weekNumber, weekStartDate: wc.weekStartDate, quantity: Math.round(qty) });
-        rowTotal += qty;
-      }
-    }
-    if (weeks.length === 0) continue;
-    idCounter++;
-    rows.push({ id: `r-${idCounter}`, itemCode, description, weeks, total: Math.round(rowTotal) });
-  }
-  return { rows, year };
+/** Bentuk payload yang dipakai API riwayat MRP (snapshot per upload). */
+function toUploadRows(rows: ImportRow[]): MrpUploadRow[] {
+  return rows.map((row) => ({
+    partNumber: row.itemCode,
+    description: row.description,
+    weeks: row.weeks.map((week) => ({
+      weekNumber: week.weekNumber,
+      weekStartDate: week.weekStartDate,
+      quantity: week.quantity,
+    })),
+  }));
 }
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 const WEEKS_PER_PAGE = 13; // Show 13 weeks at a time (half of 26)
+const PREVIEW_ROWS_PER_PAGE = 20; // Pratinjau import: batasi baris yang dirender
 
 export function WeeklyDemand() {
-  const { user } = useAuthStore();
-  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
-  
+  const { user, canEditDataModule } = useAuthStore();
+  // Planner terkunci ke modulnya sendiri; Admin/Super Admin bebas memilih modul.
+  const lockedModule = lockedDataModule(user?.role) as DataModule | null;
+
   const currentYear = new Date().getFullYear();
   const [search, setSearch] = useState('');
   const [weekPage, setWeekPage] = useState(0);
@@ -122,12 +64,84 @@ export function WeeklyDemand() {
   const [showImport, setShowImport] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
-  const [importYear, setImportYear] = useState(currentYear);
   const [importSearch, setImportSearch] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+  // Nama file & kunci idempotensi disimpan per sesi upload: retry setelah
+  // jaringan gagal tidak boleh membuat versi ganda.
+  const [importFileName, setImportFileName] = useState('');
+  const clientRequestIdRef = React.useRef('');
+  const [isSavingVersion, setIsSavingVersion] = useState(false);
+  // Parsing Excel berjalan di Web Worker; state ini menampilkan indikator loading.
+  const [isParsingFile, setIsParsingFile] = useState(false);
+  // Pratinjau hanya merender sebagian baris — merender ribuan baris x 35 minggu
+  // sekaligus membuat browser freeze ("Page Unresponsive").
+  const [previewPage, setPreviewPage] = useState(0);
+  // Tab di dalam periode terpilih: data aktif vs riwayat upload.
+  const [periodTab, setPeriodTab] = useState<'data' | 'history'>('data');
+  // Periode upload = keranjang data. WAJIB dipilih sebelum upload/isi manual.
+  const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
+  // Modul pemilik data MRP. Data Production Planning dan Material Planning
+  // disimpan TERPISAH — upload di sini hanya menyentuh modul yang dipilih.
+  // Planner TIDAK bebas memilih: modulnya dikunci ke modul miliknya.
+  const [moduleType, setModuleType] = useState<DataModule>(lockedModule ?? 'PRODUCTION');
+  // Jaga-jaga kalau role baru ter-rehydrate dari localStorage setelah mount.
+  React.useEffect(() => {
+    if (lockedModule && moduleType !== lockedModule) setModuleType(lockedModule);
+  }, [lockedModule, moduleType]);
+  // Gate edit: Admin/Super Admin selalu boleh; planner hanya untuk modulnya
+  // sendiri; User/Viewer tidak boleh. (Nama variabel dipertahankan.)
+  const isAdmin = canEditDataModule(moduleType);
+  // Periode tujuan untuk modal Import / Isi Manual. Ikut periode yang sedang
+  // dibuka, tapi tetap bisa diganti langsung dari dalam modal.
+  const [targetPeriodId, setTargetPeriodId] = useState<string | null>(null);
+  React.useEffect(() => {
+    if (selectedPeriodId) setTargetPeriodId(selectedPeriodId);
+  }, [selectedPeriodId]);
+  const [newPeriodMonth, setNewPeriodMonth] = useState('');
+  const { data: periodsRes, isLoading: periodsLoading } = usePeriods();
+  const periods = periodsRes?.data ?? [];
+  const selectedPeriod = periods.find((p) => p.id === selectedPeriodId) ?? null;
+  const targetPeriod = periods.find((p) => p.id === targetPeriodId) ?? null;
+  const createPeriod = useCreatePeriod();
 
-  // Manual add form state — uses an actual start date so the entry lines up
-  // with the dynamic W1-W26 view (relative to today).
+  const handleCreatePeriod = async () => {
+    if (!newPeriodMonth) return;
+    try {
+      const res = await createPeriod.mutateAsync({ uploadMonth: newPeriodMonth });
+      setNewPeriodMonth('');
+      setSelectedPeriodId(res.data.id);
+    } catch (error: any) {
+      alert(error.message || 'Gagal membuat periode.');
+    }
+  };
+
+  const updatePeriod = useUpdatePeriod();
+  const deletePeriod = useDeletePeriod();
+  const [editingPeriodId, setEditingPeriodId] = useState<string | null>(null);
+  const [editPeriodMonth, setEditPeriodMonth] = useState('');
+
+  const handleUpdatePeriod = async (id: string) => {
+    if (!editPeriodMonth) return;
+    try {
+      await updatePeriod.mutateAsync({ id, data: { uploadMonth: editPeriodMonth } });
+      setEditingPeriodId(null);
+      setEditPeriodMonth('');
+    } catch (error: any) {
+      alert(error.message || 'Gagal mengubah periode.');
+    }
+  };
+
+  const handleDeletePeriod = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm('Yakin ingin menghapus periode ini? Semua data di dalamnya akan terhapus.')) return;
+    try {
+      await deletePeriod.mutateAsync(id);
+      if (selectedPeriodId === id) setSelectedPeriodId(null);
+    } catch (error: any) {
+      alert(error.message || 'Gagal menghapus periode.');
+    }
+  };
+
+  // Manual add form state — aligned to the selected period's first uploaded week.
   const [formData, setFormData] = useState({
     itemId: '',
     startDate: getNextSaturdayISO(),
@@ -135,10 +149,12 @@ export function WeeklyDemand() {
     quantity: 0,
   });
 
-  const { data: summaryData, isLoading } = useWeeklyScheduleSummary();
+  const { data: summaryData, isLoading, isFetching: isSummaryFetching } = useWeeklyScheduleSummary(selectedPeriodId, moduleType);
   const { data: itemsData } = useItems();
   const createItem = useCreateItem();
   const bulkUpsert = useBulkUpsertWeeklySchedule();
+  const previewVersion = usePreviewMrpVersion();
+  const saveVersion = useSaveMrpVersion();
   const updateWeekly = useUpdateWeeklySchedule();
   const deleteWeekly = useDeleteWeeklySchedule();
   const bulkDelete = useBulkDeleteWeeklySchedule();
@@ -202,17 +218,20 @@ export function WeeklyDemand() {
 
   const ROWS_PER_PAGE = 50;
 
-  // All week numbers present in data
+  const calendarWeeks = summaryData?.weeks ?? [];
+
+  // Prefer the complete uploaded calendar so all-zero weeks remain visible.
   const allWeeks = useMemo(() => {
+    if (calendarWeeks.length > 0) return calendarWeeks.map((week) => week.weekNumber);
     const wSet = new Set<number>();
     allData.forEach((row) => Object.keys(row.weeks).forEach((w) => wSet.add(Number(w))));
     return Array.from(wSet).sort((a, b) => a - b);
-  }, [allData]);
+  }, [allData, calendarWeeks]);
 
-  // Map relative week number -> weekStartDate (taken from the first row that has it).
-  // Used to render the small date label under each W column header.
+  // Map W1-W26 to their dates from the uploaded period, including zero-demand weeks.
   const weekStartByNumber = useMemo(() => {
     const map: Record<number, string> = {};
+    for (const week of calendarWeeks) map[week.weekNumber] = week.weekStartDate;
     for (const row of allData) {
       for (const [w, info] of Object.entries(row.weeks)) {
         const wn = Number(w);
@@ -220,7 +239,7 @@ export function WeeklyDemand() {
       }
     }
     return map;
-  }, [allData]);
+  }, [allData, calendarWeeks]);
 
   // List of available weeks for the dropdown select in the form
   const availableWeeks = useMemo(() => {
@@ -230,7 +249,7 @@ export function WeeklyDemand() {
         let dateLabel = '';
         if (startStr) {
           const localDateStr = startStr.split('T')[0];
-          const d = new Date(localDateStr + 'T00:00:00');
+          const d = localDateFromISO(localDateStr);
           if (!isNaN(d.getTime())) {
             dateLabel = d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
           }
@@ -269,36 +288,41 @@ export function WeeklyDemand() {
     if (showForm && availableWeeks.length > 0) {
       const firstWeek = availableWeeks[0];
       const endStr = new Date(new Date(firstWeek.startDate).getTime() + 6 * 86400000).toISOString().split('T')[0];
-      setFormData(prev => ({
-        ...prev,
-        startDate: firstWeek.startDate,
-        endDate: endStr,
-      }));
+      // Kembalikan `prev` apa adanya kalau nilainya sudah sama — tanpa ini,
+      // setFormData selalu membuat objek baru sehingga render berulang tanpa henti
+      // ("Maximum update depth exceeded") selama form dibuka.
+      setFormData(prev =>
+        prev.startDate === firstWeek.startDate && prev.endDate === endStr
+          ? prev
+          : {
+              ...prev,
+              startDate: firstWeek.startDate,
+              endDate: endStr,
+            },
+      );
     }
   }, [showForm, availableWeeks]);
 
-  const groupedMonths = useMemo(() => {
-    const groups: Record<string, number[]> = {};
-    allWeeks.forEach((w) => {
-      const startStr = weekStartByNumber[w];
-      if (!startStr) return;
-      const monthKey = startStr.substring(0, 7); // yyyy-MM
-      if (!groups[monthKey]) groups[monthKey] = [];
-      groups[monthKey].push(w);
-    });
-    return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [allWeeks, weekStartByNumber]);
-
-  const visibleWeeks = useMemo(() => {
-    if (selectedMonth === 'ALL') {
-      return allWeeks;
-    }
-    if (selectedMonth) {
-      return groupedMonths.find(g => g[0] === selectedMonth)?.[1] || [];
-    }
-    return allWeeks.slice(weekPage * WEEKS_PER_PAGE, (weekPage + 1) * WEEKS_PER_PAGE);
-  }, [allWeeks, weekPage, selectedMonth, groupedMonths]);
+  // Semua minggu MILIK PERIODE yang sedang dibuka. Tidak lagi dipecah per bulan
+  // berdasarkan tanggal di dalam data (itulah pengelompokan lama yang salah).
+  const visibleWeeks = useMemo(
+    () => allWeeks.slice(weekPage * WEEKS_PER_PAGE, (weekPage + 1) * WEEKS_PER_PAGE),
+    [allWeeks, weekPage],
+  );
   const totalPages = useMemo(() => Math.ceil(allWeeks.length / WEEKS_PER_PAGE), [allWeeks]);
+
+  const periodRangeLabel = useMemo(() => {
+    if (calendarWeeks.length === 0) return '';
+    // Rentang ditampilkan dari tanggal minggu pertama sampai tanggal minggu
+    // terakhir pada data (sesuai label kolom W1..W26).
+    const firstDate = localDateFromISO(calendarWeeks[0].weekStartDate);
+    const lastDate = localDateFromISO(calendarWeeks[calendarWeeks.length - 1].weekStartDate);
+    const options: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' };
+    return `${firstDate.toLocaleDateString('id-ID', options)} – ${lastDate.toLocaleDateString('id-ID', options)}`;
+  }, [calendarWeeks]);
+  const periodTitle = summaryData?.periodStart
+    ? localDateFromISO(summaryData.periodStart).toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })
+    : selectedPeriod?.label ?? 'Periode';
 
   const filteredData = useMemo(() => {
     if (!search) return allData;
@@ -324,57 +348,95 @@ export function WeeklyDemand() {
   const allFilteredSelected = paginatedData.length > 0 && paginatedData.every((r: any) => selectedItemIds.includes(r.itemId));
 
   // ── Import handlers ──
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const wb = XLSX.read(evt.target?.result, { type: 'binary' });
-        let parsed: { rows: ImportRow[]; year: number } = { rows: [], year: currentYear };
-        for (const sheetName of wb.SheetNames) {
-          parsed = parse26WeekExcel(wb.Sheets[sheetName]);
-          if (parsed.rows.length > 0) break;
-        }
-        if (parsed.rows.length === 0) {
-          alert('Tidak dapat memparse file Excel. Pastikan format sesuai (kolom PN, Description, Week 1-26).');
-          return;
-        }
-        setImportRows(parsed.rows);
-        setImportYear(parsed.year || currentYear);
-      } catch {
-        alert('Gagal membaca file Excel.');
-      }
-    };
-    reader.readAsBinaryString(file);
     e.target.value = '';
+    if (!file) return;
+
+    // Kosongkan pratinjau lama supaya tabel besar sebelumnya tidak ikut dirender.
+    setImportRows([]);
+    setPreviewPage(0);
+    setIsParsingFile(true);
+
+    try {
+      const fallbackYear = Number(targetPeriod?.uploadMonth.slice(0, 4)) || currentYear;
+      const parsed = await parseMrpExcelFile(file, fallbackYear);
+      if (parsed.rows.length === 0) {
+        alert('Tidak dapat memparse file Excel. Pastikan format sesuai (kolom PN, Description, Week 1-26).');
+        return;
+      }
+      setImportRows(parsed.rows);
+      setImportFileName(file.name);
+      clientRequestIdRef.current =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `mrp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    } catch (error: any) {
+      alert(error?.message || 'Gagal membaca file Excel. Pastikan tanggal setiap kolom minggu terbaca.');
+    } finally {
+      setIsParsingFile(false);
+    }
   };
 
-  const handleBulkSave = async (saveMode: 'overwrite' | 'add') => {
-    if (importRows.length === 0) return;
-    const records: any[] = [];
-    for (const row of importRows) {
-      for (const w of row.weeks) {
-        records.push({
-          year: importYear,
-          weekNumber: w.weekNumber,
-          weekStartDate: w.weekStartDate || undefined,
-          weekEndDate: w.weekStartDate
-            ? new Date(new Date(w.weekStartDate).getTime() + 6 * 86400000).toISOString().split('T')[0]
-            : undefined,
-          itemCode: row.itemCode,
-          description: row.description,
-          quantity: w.quantity,
-        });
-      }
+  // Pratinjau perubahan dihitung ulang setiap file / periode / modul berubah,
+  // supaya ringkasan "part baru / dihapus / berubah" selalu mengacu ke versi
+  // terakhir pada periode + modul yang dipilih.
+  React.useEffect(() => {
+    if (!showImport || !targetPeriodId || importRows.length === 0) return;
+    previewVersion.mutate({ periodId: targetPeriodId, moduleType, rows: toUploadRows(importRows) });
+    // `previewVersion.mutate` stabil; sengaja tidak dimasukkan ke daftar dependensi.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showImport, targetPeriodId, moduleType, importRows]);
+
+  /**
+   * Simpan upload sebagai VERSI BARU (snapshot) lalu jadikan versi aktif.
+   * Versi sebelumnya tidak dihapus — bisa dibandingkan di tab History & Compare.
+   */
+  const handleVersionSave = async () => {
+    // Cegah double-click: satu klik hanya boleh menghasilkan satu versi.
+    if (isSavingVersion || saveVersion.isPending) return;
+    if (!targetPeriodId) {
+      alert('Pilih periode dulu sebelum menyimpan data.');
+      return;
     }
+    if (importRows.length === 0) return;
+
+    const confirmed = confirm(
+      'Versi ini akan menjadi versi aktif. Versi sebelumnya tetap tersimpan di history.\n\nLanjutkan menyimpan?',
+    );
+    if (!confirmed) return;
+
+    if (!clientRequestIdRef.current) {
+      clientRequestIdRef.current =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `mrp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    setIsSavingVersion(true);
     try {
-      const res: any = await bulkUpsert.mutateAsync({ records, saveMode });
+      const res = await saveVersion.mutateAsync({
+        periodId: targetPeriodId,
+        moduleType,
+        fileName: importFileName || 'import.xlsx',
+        clientRequestId: clientRequestIdRef.current,
+        rows: toUploadRows(importRows),
+      });
       setShowImport(false);
       setImportRows([]);
-      alert(`Berhasil import ${res?.count ?? records.length} data!`);
+      setImportSearch('');
+      setImportFileName('');
+      clientRequestIdRef.current = '';
+      setPeriodTab('history');
+      alert(
+        res.duplicate
+          ? `Data ini sudah tersimpan sebagai Upload ke-${res.data.versionNumber}.`
+          : `Berhasil disimpan sebagai Upload ke-${res.data.versionNumber} pada periode ${res.label}.\nVersi sebelumnya tetap tersimpan di tab History & Compare.`,
+      );
     } catch (err: any) {
       alert(err.message || 'Gagal menyimpan data.');
+    } finally {
+      setIsSavingVersion(false);
     }
   };
 
@@ -384,11 +446,26 @@ export function WeeklyDemand() {
     return r.itemCode.toLowerCase().includes(q) || r.description.toLowerCase().includes(q);
   });
 
+  const previewPageCount = Math.max(1, Math.ceil(filteredImport.length / PREVIEW_ROWS_PER_PAGE));
+  const safePreviewPage = Math.min(previewPage, previewPageCount - 1);
+  const pagedImport = filteredImport.slice(
+    safePreviewPage * PREVIEW_ROWS_PER_PAGE,
+    (safePreviewPage + 1) * PREVIEW_ROWS_PER_PAGE,
+  );
+
   const importSummary = useMemo(() => {
     const parts = new Set(importRows.map((r) => r.itemCode));
     const total = importRows.reduce((a, r) => a + r.total, 0);
     const weeks = new Set(importRows.flatMap((r) => r.weeks.map((w) => w.weekNumber)));
-    return { parts: parts.size, total, weeks: weeks.size };
+    const firstWeek = importRows[0]?.weeks[0];
+    const lastWeek = importRows[0]?.weeks[importRows[0].weeks.length - 1];
+    return {
+      parts: parts.size,
+      total,
+      weeks: weeks.size,
+      startDate: firstWeek?.weekStartDate ?? '',
+      endDate: lastWeek?.weekStartDate ?? '',
+    };
   }, [importRows]);
 
   const handleManualSave = async (saveMode: 'overwrite' | 'add') => {
@@ -425,8 +502,12 @@ export function WeeklyDemand() {
         quantity: formData.quantity,
       });
     }
+    if (!targetPeriodId) {
+      alert('Pilih periode dulu sebelum menyimpan data.');
+      return;
+    }
     try {
-      await bulkUpsert.mutateAsync({ records, saveMode });
+      await bulkUpsert.mutateAsync({ records, saveMode, periodId: targetPeriodId, moduleType });
       setShowForm(false);
       setFormData({ itemId: '', startDate: getNextSaturdayISO(), endDate: getNextSaturdayISO(), quantity: 0 });
     } catch (err: any) {
@@ -442,12 +523,12 @@ export function WeeklyDemand() {
           <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <CalendarRange size={24} /> 26-Week Demand Plan
           </h2>
-          <p className="text-muted-foreground text-sm">Rencana kebutuhan produksi selama 26 minggu ke depan.</p>
+          <p className="text-muted-foreground text-sm">Rencana kebutuhan produksi sesuai periode data yang diunggah.</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground border rounded-md px-3 h-9">
             <Calendar size={14} />
-            <span>26 minggu ke depan dari hari ini</span>
+            <span>{periodRangeLabel || 'Rentang mengikuti tanggal data yang diunggah'}</span>
           </div>
           {isAdmin && (
             <button onClick={() => setShowImport(true)} className="bg-secondary border hover:bg-secondary/80 px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 transition-colors">
@@ -462,11 +543,20 @@ export function WeeklyDemand() {
         </div>
       </div>
 
+      {/*
+        Pemisah modul: MRP 26 Weeks dipakai Production Planning DAN Material
+        Planning, tapi datanya disimpan terpisah. Semua baca/tulis di halaman ini
+        mengikuti pilihan di bawah.
+      */}
+      <ModuleSelect value={moduleType} onChange={setModuleType} lockedTo={lockedModule} />
+
       {/* Manual Add Form */}
       {showForm && (
         <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
           <h3 className="font-semibold mb-4 flex items-center gap-2"><Calendar size={18} /> Add Weekly Demand</h3>
           <p className="text-xs text-muted-foreground mb-4">Use "Save Add" to add to existing, or "Save Overwrite" to replace.</p>
+          <ModuleSelect value={moduleType} onChange={setModuleType} className="mb-5" lockedTo={lockedModule} />
+          <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="mb-5 max-w-md" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
             <div className="space-y-2">
               <label className="text-sm font-medium">Part Number</label>
@@ -524,10 +614,10 @@ export function WeeklyDemand() {
             </div>
             <div className="md:col-span-2 flex justify-end gap-3 mt-2">
               <button type="button" onClick={() => setShowForm(false)} className="h-10 border px-6 rounded-md font-medium hover:bg-muted text-sm transition-colors">Cancel</button>
-              <button type="button" onClick={() => handleManualSave('add')} disabled={bulkUpsert.isPending} className="h-10 bg-green-600 hover:bg-green-700 text-white px-6 rounded-md font-medium flex items-center gap-2 text-sm transition-colors">
+              <button type="button" onClick={() => handleManualSave('add')} disabled={bulkUpsert.isPending || !targetPeriodId} className="h-10 bg-green-600 hover:bg-green-700 text-white px-6 rounded-md font-medium flex items-center gap-2 text-sm transition-colors disabled:opacity-50">
                 <Plus size={16} /> {bulkUpsert.isPending ? 'Saving...' : 'Save Add'}
               </button>
-              <button type="button" onClick={() => handleManualSave('overwrite')} disabled={bulkUpsert.isPending} className="h-10 bg-primary text-primary-foreground hover:bg-primary/90 px-6 rounded-md font-medium flex items-center gap-2 text-sm transition-colors">
+              <button type="button" onClick={() => handleManualSave('overwrite')} disabled={bulkUpsert.isPending || !targetPeriodId} className="h-10 bg-primary text-primary-foreground hover:bg-primary/90 px-6 rounded-md font-medium flex items-center gap-2 text-sm transition-colors disabled:opacity-50">
                 <Save size={16} /> {bulkUpsert.isPending ? 'Saving...' : 'Save Overwrite'}
               </button>
             </div>
@@ -536,71 +626,206 @@ export function WeeklyDemand() {
       )}
 
       {/* Folder View or Table View */}
-      {!selectedMonth ? (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in zoom-in-95 duration-200">
-          {groupedMonths.length === 0 && !isLoading && (
-            <div className="col-span-full py-12 text-center text-muted-foreground border rounded-lg bg-card shadow-sm">
+      {!selectedPeriodId ? (
+        <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
+          {periods.length === 0 && !periodsLoading && (
+            <div className="py-12 text-center text-muted-foreground border rounded-lg bg-card shadow-sm">
               <CalendarRange className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
-              <p className="text-base font-semibold">Tidak ada data Demand Plan</p>
-              <p className="text-sm mt-1">Upload excel atau isi demand untuk menambahkan data.</p>
+              <p className="text-base font-semibold">Belum ada periode</p>
+              <p className="text-sm mt-1">
+                Buat periode dulu (mis. September 2026), lalu upload data MRP ke periode itu.
+              </p>
             </div>
           )}
-          {allWeeks.length > 0 && (
-            <div
-              onClick={() => setSelectedMonth('ALL')}
-              className="cursor-pointer p-5 border-2 border-indigo-500/30 bg-gradient-to-br from-indigo-500/5 to-purple-500/10 hover:from-indigo-500/10 hover:to-purple-500/20 hover:border-indigo-500/60 rounded-lg transition-all flex items-center gap-4 group shadow-sm relative overflow-hidden"
-            >
-              <div className="p-3 bg-indigo-500/15 rounded-lg group-hover:bg-indigo-500/25 transition-colors">
-                <Folder className="w-8 h-8 text-indigo-600 dark:text-indigo-400 fill-indigo-500/20" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-foreground group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                    Semua Periode
-                  </h3>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 uppercase tracking-wider">
-                    All
-                  </span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+            {periods.map((p) => {
+              if (editingPeriodId === p.id) {
+                return (
+                  <div key={p.id} className="p-5 border-2 border-primary rounded-lg bg-card flex flex-col gap-3 justify-center shadow-sm relative">
+                    <div className="text-sm font-semibold mb-1 flex items-center gap-2"><Edit2 className="w-4 h-4" /> Edit Periode</div>
+                    <input
+                      type="month"
+                      value={editPeriodMonth}
+                      onChange={(e) => setEditPeriodMonth(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleUpdatePeriod(p.id)}
+                        disabled={updatePeriod.isPending}
+                        className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 px-3 py-2 rounded-md text-sm font-medium flex items-center justify-center"
+                      >
+                        {updatePeriod.isPending ? <Loader2 size={16} className="animate-spin" /> : 'Simpan'}
+                      </button>
+                      <button
+                        onClick={() => { setEditingPeriodId(null); setEditPeriodMonth(''); }}
+                        className="flex-1 bg-secondary text-secondary-foreground hover:bg-secondary/80 px-3 py-2 rounded-md text-sm font-medium"
+                      >
+                        Batal
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+              <div
+                key={p.id}
+                onClick={() => setSelectedPeriodId(p.id)}
+                className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex flex-wrap items-center gap-x-4 gap-y-2 group shadow-sm relative overflow-hidden pr-12"
+              >
+                <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
+                  <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
                 </div>
-                <p className="text-xs text-muted-foreground mt-0.5">{allWeeks.length} Minggu (W{allWeeks[0]} - W{allWeeks[allWeeks.length - 1]})</p>
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-semibold text-foreground flex items-center gap-1.5">
+                    <span className="truncate">{p.label}</span>
+                    {p.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {p.moduleCounts[moduleType].MRP} baris MRP {MODULE_LABELS[moduleType]}
+                  </p>
+                </div>
+                <PeriodMeta period={p} className="w-full" />
+                {isAdmin && (
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingPeriodId(p.id);
+                        setEditPeriodMonth(p.uploadMonth);
+                      }}
+                      className="p-1.5 bg-background border rounded-md text-muted-foreground hover:text-blue-600 hover:border-blue-200 transition-colors shadow-sm"
+                      title="Edit Periode"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={(e) => handleDeletePeriod(p.id, e)}
+                      className="p-1.5 bg-background border rounded-md text-muted-foreground hover:text-red-600 hover:border-red-200 transition-colors shadow-sm"
+                      title="Hapus Periode"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
               </div>
+            )})}
+
+            <div className="p-5 border-2 border-dashed rounded-lg bg-card flex flex-col gap-3 justify-center">
+              <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+                <CalendarPlus className="w-4 h-4" /> Buat Periode Baru
+              </div>
+              <input
+                type="month"
+                value={newPeriodMonth}
+                onChange={(e) => setNewPeriodMonth(e.target.value)}
+                className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <button
+                onClick={handleCreatePeriod}
+                disabled={!newPeriodMonth || createPeriod.isPending}
+                className="w-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 px-3 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2"
+              >
+                {createPeriod.isPending ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                Buat {newPeriodMonth ? monthLabel(newPeriodMonth) : 'Periode'}
+              </button>
             </div>
-          )}
-          {groupedMonths.map(([monthKey, monthWeeks]) => (
-            <div
-              key={monthKey}
-              onClick={() => setSelectedMonth(monthKey)}
-              className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
-            >
-              <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
-                <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
-              </div>
-              <div>
-                <h3 className="font-semibold text-foreground">
-                  {new Date(monthKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
-                </h3>
-                <p className="text-xs text-muted-foreground mt-0.5">{monthWeeks.length} Minggu (W{monthWeeks[0]} - W{monthWeeks[monthWeeks.length - 1]})</p>
-              </div>
-            </div>
-          ))}
+          </div>
         </div>
       ) : (
       <>
-        <div className="flex items-center gap-3 mb-2 animate-in fade-in slide-in-from-bottom-2">
+        <div className="flex flex-wrap items-center gap-3 mb-2 animate-in fade-in slide-in-from-bottom-2">
           <button 
-            onClick={() => setSelectedMonth(null)}
+            onClick={() => { setSelectedPeriodId(null); setPeriodTab('data'); setSearch(''); setRowPage(0); }}
             className="p-2 hover:bg-background rounded-md border text-muted-foreground hover:text-foreground transition-colors shrink-0 bg-card"
-            title="Kembali ke Folder"
+            title="Kembali ke daftar periode"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
           <h3 className="font-semibold text-lg">
-            {selectedMonth === 'ALL' 
-              ? 'Semua Periode (26-Week Demand Plan)' 
-              : new Date(selectedMonth + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+            {periodTitle} (26-Week Demand Plan)
           </h3>
+          {/* Tab di dalam periode: data aktif vs riwayat upload (snapshot). */}
+          <div className="ml-auto flex items-center gap-1 border rounded-lg p-1 bg-card">
+            <button
+              onClick={() => setPeriodTab('data')}
+              className={`h-8 px-3 rounded-md text-sm font-medium flex items-center gap-1.5 transition-colors ${
+                periodTab === 'data' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              <CalendarRange size={14} /> Data Aktif
+            </button>
+            <button
+              onClick={() => setPeriodTab('history')}
+              className={`h-8 px-3 rounded-md text-sm font-medium flex items-center gap-1.5 transition-colors ${
+                periodTab === 'history' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              <History size={14} /> History &amp; Compare
+            </button>
+          </div>
         </div>
+
+      {periodTab === 'data' && (summaryData?.activeVersion || summaryData?.lastChange) && (
+        <div className="mb-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-muted-foreground bg-muted/30 border rounded-lg px-3 py-2 animate-in fade-in">
+          <span className="flex items-center gap-1.5">
+            <Info size={13} className="shrink-0" />
+            {summaryData?.activeVersion ? (
+              <>
+                Data aktif dari{' '}
+                <strong className="text-foreground">
+                  Upload ke-{summaryData.activeVersion.versionNumber}
+                </strong>
+                {summaryData.activeVersion.fileName && (
+                  <span className="flex items-center gap-1 text-muted-foreground/80">
+                    <FileSpreadsheet size={11} /> {summaryData.activeVersion.fileName}
+                  </span>
+                )}
+              </>
+            ) : (
+              'Belum ada versi tersimpan untuk data aktif'
+            )}
+          </span>
+          {summaryData?.lastChange && (
+            <span>
+              Diperbarui:{' '}
+              <strong className="text-foreground">{dateTimeLabel(summaryData.lastChange.at)}</strong>
+              {' · '}
+              {summaryData.lastChange.byName ?? '—'}
+              {summaryData.lastChange.kind && (
+                <span className="text-muted-foreground/80">
+                  {' '}
+                  (
+                  {summaryData.lastChange.kind === 'UPLOAD'
+                    ? 'upload'
+                    : summaryData.lastChange.kind === 'EDIT'
+                      ? 'edit manual'
+                      : 'rollback hapus versi'}
+                  )
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+      )}
+
+      {periodTab === 'history' ? (
+        <div className="bg-card text-card-foreground border rounded-lg shadow-sm animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <UploadHistoryPanel
+            periodId={selectedPeriodId}
+            periodLabel={periodTitle}
+            moduleType={moduleType}
+            isAdmin={isAdmin}
+          />
+        </div>
+      ) : (
       <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
+        {/* Indikator saat data aktif dimuat ulang (mis. setelah simpan versi baru) */}
+        {isSummaryFetching && !isLoading && (
+          <div className="flex items-center gap-2 px-4 py-1.5 text-xs text-muted-foreground border-b bg-primary/5">
+            <Loader2 size={12} className="animate-spin" /> Memuat data aktif terbaru...
+          </div>
+        )}
         {/* Filter bar */}
         <div className="p-4 border-b bg-muted/10 flex items-center gap-3">
           {isAdmin && selectedItemIds.length > 0 && (
@@ -623,7 +848,7 @@ export function WeeklyDemand() {
               onChange={(e) => { setSearch(e.target.value); setRowPage(0); }}
             />
           </div>
-          {allWeeks.length > 0 && !selectedMonth && (
+          {allWeeks.length > 0 && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span>Week {visibleWeeks[0]}–{visibleWeeks[visibleWeeks.length - 1]}</span>
               <button
@@ -659,7 +884,7 @@ export function WeeklyDemand() {
                 {visibleWeeks.map((w) => {
                   const start = weekStartByNumber[w];
                   const startLabel = start
-                    ? new Date(start).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })
+                    ? localDateFromISO(start).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })
                     : '';
                   return (
                     <th key={w} className="px-3 py-1 text-center min-w-[80px]">
@@ -675,7 +900,8 @@ export function WeeklyDemand() {
               {isLoading ? (
                 <tr>
                   <td colSpan={visibleWeeks.length + (isAdmin ? 4 : 3)} className="p-8 text-center">
-                    Loading...
+                    <Loader2 size={22} className="animate-spin mx-auto text-primary" />
+                    <p className="mt-2 text-sm text-muted-foreground">Memuat data aktif...</p>
                   </td>
                 </tr>
               ) : filteredData.length === 0 ? (
@@ -713,10 +939,10 @@ export function WeeklyDemand() {
                       const qty = weekData?.quantity;
                       return (
                         <td key={w} className="px-3 py-3 text-center relative group min-w-[80px]">
-                          {qty ? (
+                          {weekData ? (
                             <div className="flex flex-col items-center justify-center w-full h-full">
                               <span className="font-medium text-blue-600 dark:text-blue-400">
-                                {qty.toLocaleString()}
+                                {weekData.quantity.toLocaleString()}
                               </span>
                               {isAdmin && (
                                 <div className="absolute inset-0 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 bg-card/90 backdrop-blur-[1px] transition-all">
@@ -753,7 +979,7 @@ export function WeeklyDemand() {
                       );
                     })}
                     <td className="px-4 py-3 text-right font-bold text-primary">
-                      {visibleWeeks.reduce((sum, w) => sum + (row.weeks?.[w]?.quantity || 0), 0).toLocaleString()}
+                      {row.total.toLocaleString()}
                     </td>
                   </tr>
                 ))
@@ -764,7 +990,9 @@ export function WeeklyDemand() {
 
         {filteredData.length > 0 && (
           <div className="px-4 py-3 border-t bg-muted/10 flex items-center justify-between text-xs text-muted-foreground">
-            <span>Menampilkan {filteredData.length} item · {allWeeks.length} minggu</span>
+            <span>
+              Menampilkan {filteredData.length} item · {allWeeks.length} minggu
+            </span>
             {totalRowPages > 1 && (
               <div className="flex items-center gap-2">
                 <button
@@ -787,27 +1015,35 @@ export function WeeklyDemand() {
           </div>
         )}
       </div>
+      )}
       </>
       )}
 
       {/* Import Modal */}
       {showImport && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-card text-card-foreground border rounded-lg shadow-xl max-w-5xl w-full max-h-[92vh] flex flex-col">
+          <div className="relative bg-card text-card-foreground border rounded-lg shadow-xl max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden">
             {/* Modal Header */}
             <div className="flex justify-between items-center p-6 border-b">
               <h3 className="text-xl font-bold flex items-center gap-2">
                 <Upload size={20} /> Import 26-Week Demand Plan
               </h3>
               <button
-                onClick={() => { setShowImport(false); setImportRows([]); setImportSearch(''); }}
-                className="text-muted-foreground hover:text-foreground text-lg leading-none"
+                onClick={() => { setShowImport(false); setImportRows([]); setImportSearch(''); setImportFileName(''); clientRequestIdRef.current = ''; }}
+                disabled={isSavingVersion || saveVersion.isPending}
+                className="text-muted-foreground hover:text-foreground text-lg leading-none disabled:opacity-40"
               >
                 ✕
               </button>
             </div>
 
             <div className="p-6 flex-1 overflow-auto space-y-5">
+              {/* Modul tujuan — data Production & Material disimpan terpisah */}
+              <ModuleSelect value={moduleType} onChange={setModuleType} lockedTo={lockedModule} />
+
+              {/* Periode tujuan — wajib dipilih sebelum bisa menyimpan */}
+              <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="max-w-md" />
+
               {/* Upload */}
               <div className="space-y-2">
                 <p className="text-sm text-muted-foreground">
@@ -844,15 +1080,86 @@ export function WeeklyDemand() {
                     </div>
                   </div>
 
-                  {/* Tahun import */}
+                  {/* Peringatan format file / PN duplikat */}
+                  {previewVersion.data && previewVersion.data.warnings.length > 0 && (
+                    <div className="text-xs border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 rounded-lg px-3 py-2 space-y-1">
+                      <p className="font-semibold text-amber-800 dark:text-amber-300">Periksa file sebelum menyimpan</p>
+                      <ul className="list-disc pl-4 text-amber-900/80 dark:text-amber-200/80 space-y-0.5">
+                        {previewVersion.data.warnings.map((warning) => (
+                          <li key={warning}>{warning}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Perbandingan dengan versi sebelumnya (dihitung sebelum disimpan) */}
+                  <div className="border rounded-lg bg-card">
+                    <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b">
+                      <h4 className="text-sm font-semibold flex items-center gap-2">
+                        <GitCompare size={15} /> Perubahan vs Versi Sebelumnya
+                      </h4>
+                      <span className="text-xs text-muted-foreground">
+                        {previewVersion.isPending ? (
+                          <span className="flex items-center gap-1">
+                            <Loader2 size={12} className="animate-spin" /> Menghitung...
+                          </span>
+                        ) : previewVersion.data?.hasBaseline ? (
+                          <>
+                            Versi baru: <strong>Upload ke-{previewVersion.data.nextVersionNumber}</strong>
+                          </>
+                        ) : null}
+                      </span>
+                    </div>
+                    <div className="p-3 space-y-3">
+                      {!targetPeriodId ? (
+                        <p className="text-xs text-muted-foreground">
+                          Pilih periode dulu untuk melihat perbandingan dengan upload sebelumnya.
+                        </p>
+                      ) : previewVersion.isError ? (
+                        <p className="text-xs text-red-600">{(previewVersion.error as Error).message}</p>
+                      ) : !previewVersion.data ? (
+                        <p className="text-xs text-muted-foreground">Menghitung perbandingan...</p>
+                      ) : !previewVersion.data.hasBaseline ? (
+                        <div className="text-xs bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded-md px-3 py-2 text-blue-800 dark:text-blue-300">
+                          <strong>Ini upload pertama</strong> untuk periode{' '}
+                          {targetPeriod?.label ?? 'terpilih'} modul {MODULE_LABELS[moduleType]} — belum ada
+                          versi pembanding.
+                        </div>
+                      ) : (
+                        <>
+                          <p className="text-xs text-muted-foreground">
+                            Pembanding:{' '}
+                            {previewVersion.data.baseline?.source === 'LIVE'
+                              ? 'data aktif (belum tersimpan sebagai versi)'
+                              : `Upload ke-${previewVersion.data.baseline?.versionNumber} · ${dateTimeLabel(
+                                  previewVersion.data.baseline?.uploadedAt,
+                                )}${
+                                  previewVersion.data.baseline?.uploadedByName
+                                    ? ` · ${previewVersion.data.baseline.uploadedByName}`
+                                    : ''
+                                }`}
+                          </p>
+                          <ChangeSummaryCards summary={previewVersion.data.summary} />
+                          <VersionCompareTable
+                            key={`${targetPeriodId}-${moduleType}-${importRows.length}`}
+                            columns={previewVersion.data.columns}
+                            parts={previewVersion.data.parts}
+                            emptyMessage="Tidak ada perubahan dibanding versi sebelumnya."
+                            maxHeightClass="max-h-[35vh]"
+                          />
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Periode tanggal sumber */}
                   <div className="flex items-center gap-3">
-                    <label className="text-sm font-medium whitespace-nowrap">Tahun Data:</label>
-                    <input
-                      type="number"
-                      className="h-9 w-28 px-3 border rounded-md bg-background text-sm"
-                      value={importYear}
-                      onChange={(e) => setImportYear(Number(e.target.value))}
-                    />
+                    <span className="text-sm font-medium whitespace-nowrap">Rentang Data:</span>
+                    <span className="text-sm text-muted-foreground whitespace-nowrap">
+                      {importSummary.startDate && importSummary.endDate
+                        ? `${localDateFromISO(importSummary.startDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })} – ${localDateFromISO(importSummary.endDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}`
+                        : '—'}
+                    </span>
                     <div className="flex-1 relative">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={15} />
                       <input
@@ -860,7 +1167,10 @@ export function WeeklyDemand() {
                         placeholder="Cari Part Number / Description..."
                         className="w-full h-9 pl-9 pr-3 border rounded-md bg-background text-sm"
                         value={importSearch}
-                        onChange={(e) => setImportSearch(e.target.value)}
+                        onChange={(e) => {
+                          setImportSearch(e.target.value);
+                          setPreviewPage(0);
+                        }}
                       />
                     </div>
                     <span className="text-xs text-muted-foreground whitespace-nowrap">
@@ -881,7 +1191,7 @@ export function WeeklyDemand() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
-                        {filteredImport.map((row) => (
+                        {pagedImport.map((row) => (
                           <tr key={row.id} className="hover:bg-muted/40">
                             <td className="px-4 py-2 font-medium">{row.itemCode}</td>
                             <td className="px-4 py-2 text-muted-foreground max-w-[200px] truncate" title={row.description}>
@@ -894,17 +1204,18 @@ export function WeeklyDemand() {
                                 </div>
                                 <div className="text-[10px] space-y-0.5 max-w-md">
                                   {row.weeks.map((week, idx) => {
-                                    const endDate = week.weekStartDate 
-                                      ? new Date(week.weekStartDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })
+                                    const endDate = week.weekStartDate
+                                      ? localDateFromISO(week.weekStartDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })
                                       : '';
-                                    const startDate = week.weekStartDate
-                                      ? new Date(new Date(week.weekStartDate).getTime() - 6 * 86400000).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })
-                                      : '';
+                                    const startDate = week.weekStartDate ? localDateFromISO(week.weekStartDate) : null;
+                                    startDate?.setDate(startDate.getDate() - 6);
                                     return (
                                       <div key={idx} className="flex items-center gap-1">
                                         <span className="font-medium text-blue-600">W{week.weekNumber}</span>
                                         {startDate && endDate && (
-                                          <span className="text-muted-foreground/60">({startDate} - {endDate})</span>
+                                          <span className="text-muted-foreground/60">
+                                            ({startDate.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })} - {endDate})
+                                          </span>
                                         )}
                                         <span className="text-foreground font-medium">: {week.quantity.toLocaleString()}</span>
                                       </div>
@@ -933,35 +1244,86 @@ export function WeeklyDemand() {
                       </tbody>
                     </table>
                   </div>
+
+                  {/* Paginasi pratinjau — wajib: merender semua baris x semua minggu
+                      sekaligus membuat browser freeze pada file besar. */}
+                  {filteredImport.length > PREVIEW_ROWS_PER_PAGE && (
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>
+                        Menampilkan {safePreviewPage * PREVIEW_ROWS_PER_PAGE + 1}–
+                        {Math.min((safePreviewPage + 1) * PREVIEW_ROWS_PER_PAGE, filteredImport.length)} dari{' '}
+                        {filteredImport.length.toLocaleString('id-ID')} part
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewPage((page) => Math.max(0, page - 1))}
+                          disabled={safePreviewPage === 0}
+                          className="h-7 w-7 flex items-center justify-center border rounded hover:bg-muted disabled:opacity-40"
+                        >
+                          <ChevronLeft size={13} />
+                        </button>
+                        <span>
+                          {safePreviewPage + 1}/{previewPageCount}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewPage((page) => Math.min(previewPageCount - 1, page + 1))}
+                          disabled={safePreviewPage >= previewPageCount - 1}
+                          className="h-7 w-7 flex items-center justify-center border rounded hover:bg-muted disabled:opacity-40"
+                        >
+                          <ChevronRight size={13} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </div>
 
             {/* Modal Footer */}
-            <div className="p-5 border-t flex justify-end gap-3 bg-muted/10">
+            <div className="p-5 border-t flex flex-wrap justify-between items-center gap-3 bg-muted/10">
+              <p className="text-xs text-muted-foreground max-w-xl">
+                <strong>Save Overwrite</strong> menyimpan file ini sebagai{' '}
+                <strong>versi baru (Upload ke-{previewVersion.data?.nextVersionNumber ?? 1})</strong> dan
+                menjadikannya versi aktif untuk periode &amp; modul terpilih. Versi sebelumnya tidak dihapus
+                — tetap tersimpan di tab <em>History &amp; Compare</em>.
+              </p>
+              <div className="flex justify-end gap-3">
               <button
-                onClick={() => { setShowImport(false); setImportRows([]); }}
-                className="h-10 border px-6 rounded-md font-medium hover:bg-muted text-sm transition-colors"
+                onClick={() => { setShowImport(false); setImportRows([]); setImportSearch(''); setImportFileName(''); }}
+                disabled={isSavingVersion || saveVersion.isPending}
+                className="h-10 border px-6 rounded-md font-medium hover:bg-muted text-sm transition-colors disabled:opacity-50"
               >
                 Batal
               </button>
               <button
-                onClick={() => handleBulkSave('add')}
-                disabled={bulkUpsert.isPending || importRows.length === 0}
-                className="h-10 bg-green-600 hover:bg-green-700 text-white px-6 rounded-md font-medium flex items-center gap-2 disabled:opacity-50 text-sm transition-colors"
-              >
-                <Plus size={16} />
-                {bulkUpsert.isPending ? 'Menyimpan...' : 'Save (Add)'}
-              </button>
-              <button
-                onClick={() => handleBulkSave('overwrite')}
-                disabled={bulkUpsert.isPending || importRows.length === 0}
+                onClick={handleVersionSave}
+                disabled={isSavingVersion || saveVersion.isPending || importRows.length === 0 || !targetPeriodId}
                 className="h-10 bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white px-6 rounded-md font-medium flex items-center gap-2 disabled:opacity-50 text-sm transition-colors"
               >
-                <Save size={16} />
-                {bulkUpsert.isPending ? 'Menyimpan...' : 'Save Overwrite'}
+                {isSavingVersion || saveVersion.isPending ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                {isSavingVersion || saveVersion.isPending ? 'Menyimpan...' : 'Save Overwrite'}
               </button>
+              </div>
             </div>
+
+            {/* Overlay proses: membaca file (worker) / menyimpan versi baru */}
+            {(isParsingFile || isSavingVersion || saveVersion.isPending) && (
+              <div className="absolute inset-0 z-30 bg-card/85 backdrop-blur-sm flex items-center justify-center">
+                <div className="text-center space-y-3 px-8">
+                  <Loader2 size={34} className="animate-spin mx-auto text-primary" />
+                  <p className="text-sm font-semibold">
+                    {isParsingFile ? 'Membaca file Excel...' : 'Menyimpan versi baru...'}
+                  </p>
+                  <p className="text-xs text-muted-foreground max-w-sm">
+                    {isParsingFile
+                      ? `${importFileName ? `${importFileName} · ` : ''}file besar bisa butuh beberapa detik. Mohon tunggu, halaman tetap bisa dipakai.`
+                      : 'Snapshot sedang dibuat dan data aktif sedang diperbarui. Jangan tutup halaman ini.'}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

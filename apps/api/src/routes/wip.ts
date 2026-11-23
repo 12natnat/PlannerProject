@@ -1,11 +1,29 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
 import { authenticate, requireRole } from '../middleware/auth';
+import { EDIT_ROLES, canWriteModule, forbiddenModuleMessage, requireModuleAccess } from '../lib/permissions';
+import {
+  resolveUploadPeriod,
+  recordPeriodChange,
+  touchPeriod,
+  requireModuleType,
+  parseModuleType,
+} from '../lib/periodScope';
 
 export default async function wipRoutes(server: FastifyInstance) {
-  // Get all WIPs
+  // Get all WIPs. Bisa difilter per periode + modul:
+  //   ?periodId=...&moduleType=PRODUCTION|MATERIAL
+  // Tanpa `moduleType` kedua modul dibaca (hanya untuk daftar referensi seperti
+  // nama lokasi di Master Item). Konsumen data wajib mengirim `moduleType`.
   server.get('/api/v1/wip', { preValidation: [authenticate] }, async (request, reply) => {
+    const { periodId, moduleType } = request.query as { periodId?: string; moduleType?: string };
+    const module = parseModuleType(moduleType);
+    const where: any = {};
+    if (periodId) where.periodId = periodId;
+    if (module) where.moduleType = module;
+
     const wips = await prisma.wIP.findMany({
+      where: Object.keys(where).length > 0 ? where : undefined,
       include: { item: true, user: { select: { name: true } } },
     });
     return reply.send({ data: wips });
@@ -14,20 +32,38 @@ export default async function wipRoutes(server: FastifyInstance) {
   // Upsert WIP
   server.post(
     '/api/v1/wip',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared), requireModuleAccess()] },
     async (request, reply) => {
-      const { itemId, location, quantity, progressPercent, date, shift, status, notes, saveMode } = request.body as any;
+      const body = (request.body || {}) as any;
+      const { itemId, location, quantity, progressPercent, date, shift, status, notes, saveMode } = body;
 
       if (!itemId || !location || quantity === undefined || !date || !shift) {
         return reply.code(400).send({ error: 'Bad Request', message: 'Missing required fields' });
       }
 
+      const resolved = await resolveUploadPeriod(body, request.user!.id);
+      if (!resolved.ok) {
+        return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
+      }
+      const { periodId } = resolved;
+
+      // Data WIP dipisah per modul — WAJIB, tidak ada default.
+      const moduleRes = requireModuleType(body.moduleType, 'Simpan WIP');
+      if (!moduleRes.ok) {
+        return reply.code(moduleRes.code).send({ error: 'Bad Request', message: moduleRes.message });
+      }
+      const { moduleType } = moduleRes;
+
       const existingWip = await prisma.wIP.findUnique({
-        where: { itemId_location: { itemId, location } },
+        where: {
+          periodId_moduleType_itemId_location: { periodId, moduleType, itemId, location },
+        },
       });
 
       const updatedWip = await prisma.wIP.upsert({
-        where: { itemId_location: { itemId, location } },
+        where: {
+          periodId_moduleType_itemId_location: { periodId, moduleType, itemId, location },
+        },
         update: {
           quantity: saveMode === 'add' ? (existingWip?.quantity || 0) + parseFloat(quantity) : parseFloat(quantity),
           progressPercent: parseInt(progressPercent || 0),
@@ -38,6 +74,8 @@ export default async function wipRoutes(server: FastifyInstance) {
           updatedBy: request.user!.id,
         },
         create: {
+          periodId,
+          moduleType,
           itemId,
           location,
           quantity: parseFloat(quantity),
@@ -50,6 +88,7 @@ export default async function wipRoutes(server: FastifyInstance) {
         },
       });
 
+      await touchPeriod(periodId, request.user!.id);
       // Audit Log
       await prisma.auditLog.create({
         data: {
@@ -69,12 +108,29 @@ export default async function wipRoutes(server: FastifyInstance) {
   // Bulk Upsert WIP
   server.post(
     '/api/v1/wip/bulk',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared), requireModuleAccess()] },
     async (request, reply) => {
-      const { records, saveMode } = request.body as any;
+      const body = (request.body || {}) as any;
+      const { records, saveMode } = body;
       if (!Array.isArray(records) || records.length === 0) {
         return reply.code(400).send({ error: 'Bad Request', message: 'No records provided' });
       }
+
+      const resolved = await resolveUploadPeriod(body, request.user!.id);
+      if (!resolved.ok) {
+        return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
+      }
+      const { periodId } = resolved;
+
+      // Data WIP dipisah per modul — WAJIB, tidak ada default.
+      const moduleRes = requireModuleType(body.moduleType, 'Upload WIP');
+      if (!moduleRes.ok) {
+        return reply.code(moduleRes.code).send({ error: 'Bad Request', message: moduleRes.message });
+      }
+      const { moduleType } = moduleRes;
+
+      // Hitungan & penimpaan SELALU dibatasi ke periode + modul ini saja.
+      const previousCount = await prisma.wIP.count({ where: { periodId, moduleType } });
 
       if (saveMode === 'overwrite') {
         const uniqueCodes = [...new Set(records.map((r: any) => (r.partNumber || r.itemCode) as string).filter(Boolean))];
@@ -101,7 +157,7 @@ export default async function wipRoutes(server: FastifyInstance) {
           const keepSet = new Set(scope.itemsToKeep.map(i => `${i.itemId}_${i.location}`));
           
           const wips = await prisma.wIP.findMany({
-            where: { date: scope.date },
+            where: { periodId, moduleType, date: scope.date },
             select: { id: true, itemId: true, location: true }
           });
           
@@ -131,17 +187,23 @@ export default async function wipRoutes(server: FastifyInstance) {
         }
 
         const existingWip = await prisma.wIP.findUnique({
-          where: { itemId_location: { itemId: item.id, location } },
+          where: {
+            periodId_moduleType_itemId_location: { periodId, moduleType, itemId: item.id, location },
+          },
         });
 
         const updatedWip = await prisma.wIP.upsert({
-          where: { itemId_location: { itemId: item.id, location } },
+          where: {
+            periodId_moduleType_itemId_location: { periodId, moduleType, itemId: item.id, location },
+          },
           update: {
             quantity: saveMode === 'add' ? (existingWip?.quantity || 0) + parseFloat(quantity) : parseFloat(quantity),
             date: new Date(date),
             updatedBy: request.user!.id,
           },
           create: {
+            periodId,
+            moduleType,
             itemId: item.id,
             location,
             quantity: parseFloat(quantity),
@@ -165,14 +227,24 @@ export default async function wipRoutes(server: FastifyInstance) {
         results.push(updatedWip);
       }
 
-      return reply.code(200).send({ data: results });
+      await recordPeriodChange({
+        periodId,
+        userId: request.user!.id,
+        sourceType: 'WIP',
+        moduleType,
+        rowCount: results.length,
+        replaced: previousCount,
+        mode: saveMode === 'add' ? 'add' : 'overwrite',
+      });
+
+      return reply.code(200).send({ data: results, moduleType });
     }
   );
 
   // Update WIP by ID
   server.put(
     '/api/v1/wip/:id',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const { quantity, progressPercent, date, shift, status, notes } = request.body as any;
@@ -180,6 +252,11 @@ export default async function wipRoutes(server: FastifyInstance) {
       const existingWip = await prisma.wIP.findUnique({ where: { id } });
       if (!existingWip) {
         return reply.code(404).send({ error: 'Not Found', message: 'WIP not found' });
+      }
+
+      // Planner hanya boleh menyentuh baris milik modulnya sendiri.
+      if (!canWriteModule(request.user?.role, existingWip.moduleType)) {
+        return reply.code(403).send({ error: 'Forbidden', message: forbiddenModuleMessage(request.user?.role) });
       }
 
       const updatedWip = await prisma.wIP.update({
@@ -207,6 +284,7 @@ export default async function wipRoutes(server: FastifyInstance) {
         },
       });
 
+      await touchPeriod(existingWip.periodId, request.user!.id);
       return reply.send({ data: updatedWip });
     }
   );
@@ -214,16 +292,31 @@ export default async function wipRoutes(server: FastifyInstance) {
   // Bulk Delete WIP
   server.delete(
     '/api/v1/wip/bulk',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared)] },
     async (request, reply) => {
-      const { ids } = request.body as { ids: string[] };
+      const ids = (request.body as { ids: string[] }).ids;
       if (!Array.isArray(ids) || ids.length === 0) {
         return reply.code(400).send({ error: 'Bad Request', message: 'No ids provided' });
       }
 
+      // Tandai semua periode yang datanya ikut terhapus.
+      const affected = await prisma.wIP.findMany({
+        where: { id: { in: ids } },
+        select: { periodId: true, moduleType: true },
+      });
+
+      // Planner tidak boleh menghapus data modul planner lain.
+      if (affected.some((w) => !canWriteModule(request.user?.role, w.moduleType))) {
+        return reply.code(403).send({ error: 'Forbidden', message: forbiddenModuleMessage(request.user?.role) });
+      }
+
+      const periodIds = [...new Set(affected.map((w) => w.periodId))];
+
       await prisma.wIP.deleteMany({
         where: { id: { in: ids } },
       });
+
+      for (const periodId of periodIds) await touchPeriod(periodId, request.user!.id);
 
       await prisma.auditLog.create({
         data: {
@@ -242,7 +335,7 @@ export default async function wipRoutes(server: FastifyInstance) {
   // Delete WIP by ID
   server.delete(
     '/api/v1/wip/:id',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
 
@@ -251,7 +344,14 @@ export default async function wipRoutes(server: FastifyInstance) {
         return reply.code(404).send({ error: 'Not Found', message: 'WIP not found' });
       }
 
+      // Planner hanya boleh menyentuh baris milik modulnya sendiri.
+      if (!canWriteModule(request.user?.role, existingWip.moduleType)) {
+        return reply.code(403).send({ error: 'Forbidden', message: forbiddenModuleMessage(request.user?.role) });
+      }
+
       await prisma.wIP.delete({ where: { id } });
+
+      await touchPeriod(existingWip.periodId, request.user!.id);
 
       await prisma.auditLog.create({
         data: {

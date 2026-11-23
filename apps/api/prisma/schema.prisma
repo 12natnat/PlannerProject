@@ -17,6 +17,8 @@ datasource db {
 enum UserRole {
   SUPER_ADMIN
   ADMIN
+  PRODUCTION_PLANNER
+  MATERIAL_PLANNER
   USER
 }
 
@@ -31,13 +33,13 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Relations
-  auditLogs     AuditLog[]
-  notifications Notification[]
+  auditLogs            AuditLog[]
+  notifications        Notification[]
   calculationHistories CalculationHistory[]
-  fgStocks      FGStock[]
-  fgStockHistory FGStockHistory[]
-  wips          WIP[]
-  cycleAuditLogs CycleAuditLog[]
+  fgStocks             FGStock[]
+  fgStockHistory       FGStockHistory[]
+  wips                 WIP[]
+  cycleAuditLogs       CycleAuditLog[]
 
   @@index([email])
   @@index([role])
@@ -49,12 +51,12 @@ model User {
 // ============================================
 
 model Item {
-  id        String   @id @default(cuid())
-  partNumber  String   @unique
-  itemName  String
-  unit      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String   @id @default(cuid())
+  partNumber String   @unique
+  itemName   String
+  unit       String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   // Relations
   dailySchedules  DailySchedule[]
@@ -132,23 +134,103 @@ model DailySchedule {
 }
 
 model WeeklySchedule {
-  id            String   @id @default(cuid())
+  id            String     @id @default(cuid())
+  periodId      String // periode UPLOAD (bukan tanggal di dalam data)
+  // Modul pemilik data. WAJIB: data Production Planning dan Material Planning
+  // tidak boleh saling memengaruhi (lihat migrasi 20260929000000_module_type).
+  moduleType    DataModule
   year          Int
   weekNumber    Int // 1-26
-  weekStartDate DateTime @db.Date
-  weekEndDate   DateTime @db.Date
+  weekStartDate DateTime   @db.Date
+  weekEndDate   DateTime   @db.Date
   itemId        String
   quantity      Float
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
 
   // Relations
-  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  item   Item          @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  period PlanningCycle @relation(fields: [periodId], references: [id], onDelete: Cascade)
 
-  @@unique([year, weekNumber, itemId])
-  @@index([year, weekNumber])
+  @@unique([periodId, moduleType, year, weekNumber, itemId])
+  @@index([periodId])
+  @@index([periodId, moduleType])
+  @@index([periodId, moduleType, year, weekNumber])
   @@index([itemId])
   @@map("weekly_schedules")
+}
+
+// ============================================
+// MRP UPLOAD HISTORY (versioning mingguan)
+// ============================================
+// Setiap upload Excel "Save Overwrite" menyimpan SNAPSHOT penuh, bukan menimpa
+// versi sebelumnya. `weekly_schedules` tetap menjadi data AKTIF (dibaca modul
+// lain), sedangkan tabel di bawah menyimpan riwayat untuk perbandingan.
+//
+// Aturan:
+//  - Nomor versi berurutan per (periodId, moduleType), mulai dari 1.
+//  - Tepat SATU versi `isCurrent` per (periodId, moduleType). Dijaga kolom
+//    `currentKey` (unique) karena MySQL tidak punya partial unique index:
+//    nilainya "<periodId>:<moduleType>" hanya untuk versi aktif, NULL untuk yang lain.
+//  - Snapshot TIDAK ikut berubah saat qty diedit manual dari tabel data aktif.
+
+enum MrpVersionSource {
+  UPLOAD // upload Excel "Save Overwrite"
+  BACKFILL // snapshot data lama saat fitur riwayat diperkenalkan
+}
+
+model MrpVersion {
+  id            String           @id @default(cuid())
+  periodId      String
+  moduleType    DataModule
+  versionNumber Int
+  isCurrent     Boolean          @default(false)
+  currentKey    String?          @unique
+  source        MrpVersionSource @default(UPLOAD)
+
+  fileName       String?
+  uploadedAt     DateTime @default(now())
+  uploadedBy     String? // NULL untuk backfill sistem; sengaja tanpa relasi agar riwayat tetap ada meski user dihapus
+  uploadedByName String?
+
+  itemCount     Int       @default(0) // jumlah part unik
+  rowCount      Int       @default(0) // jumlah baris part x minggu
+  totalQty      Float     @default(0)
+  weekStartDate DateTime? @db.Date // tanggal minggu pertama (W1)
+  weekCount     Int       @default(26)
+
+  // Kunci idempotensi dari klien: double-click / retry tidak membuat versi ganda.
+  clientRequestId String?  @unique
+  notes           String?  @db.Text
+  createdAt       DateTime @default(now())
+
+  period PlanningCycle   @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  rows   MrpVersionRow[]
+
+  @@unique([periodId, moduleType, versionNumber])
+  @@index([periodId, moduleType, isCurrent])
+  @@index([uploadedAt])
+  @@map("mrp_versions")
+}
+
+model MrpVersionRow {
+  id            String   @id @default(cuid())
+  versionId     String
+  // Disimpan sebagai teks (bukan relasi Item) supaya riwayat tidak hilang saat
+  // master item berubah nama atau dihapus.
+  itemId        String?
+  partNumber    String
+  description   String?
+  weekNumber    Int
+  weekStartDate DateTime @db.Date
+  weekEndDate   DateTime @db.Date
+  quantity      Float    @default(0)
+
+  version MrpVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@index([versionId, partNumber])
+  @@index([versionId, weekStartDate])
+  @@map("mrp_version_rows")
 }
 
 // ============================================
@@ -156,15 +238,15 @@ model WeeklySchedule {
 // ============================================
 
 model FGStock {
-  id        String    @id @default(cuid())
-  itemId    String    @unique // Unique karena hanya 1 record per item (overwrite)
+  id        String   @id @default(cuid())
+  itemId    String   @unique // Unique karena hanya 1 record per item (overwrite)
   quantity  Float
-  date      DateTime  @db.Date
+  date      DateTime @db.Date
   shift     Int? // Optional
-  notes     String?   @db.Text
+  notes     String?  @db.Text
   updatedBy String
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
   item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
@@ -186,8 +268,19 @@ enum WIPStatus {
   COMPLETED
 }
 
+// Pemilik data untuk tabel yang DIPAKAI BERSAMA secara tampilan
+// (MRP 26 Weeks, WIP). Setiap baris hanya boleh dibaca/ditulis oleh modul
+// pemiliknya, sehingga upload di satu modul tidak pernah mengubah modul lain.
+enum DataModule {
+  PRODUCTION // Production Planning
+  MATERIAL   // Material Planning
+}
+
 model WIP {
   id              String    @id @default(cuid())
+  periodId        String // periode UPLOAD (bukan tanggal di dalam data)
+  // Modul pemilik data (PRODUCTION | MATERIAL). Lihat model WeeklySchedule.
+  moduleType      DataModule
   itemId          String
   location        String // Mesin-01, Assembly Line, etc.
   quantity        Float
@@ -201,14 +294,17 @@ model WIP {
   updatedAt       DateTime  @updatedAt
 
   // Relations
-  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [updatedBy], references: [id])
+  item   Item          @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  user   User          @relation(fields: [updatedBy], references: [id])
+  period PlanningCycle @relation(fields: [periodId], references: [id], onDelete: Cascade)
 
-  @@unique([itemId, location]) // Unique per item + location (overwrite)
+  @@unique([periodId, moduleType, itemId, location]) // Unique per periode + modul + item + location (overwrite)
+  @@index([periodId])
+  @@index([periodId, moduleType])
   @@index([itemId])
   @@index([location])
   @@index([status])
-  @@index([date, shift])
+  @@index([periodId, moduleType, date, shift])
   @@map("wips")
 }
 
@@ -277,13 +373,18 @@ model Notification {
 
 model Hotlist {
   id           String    @id @default(cuid())
-  partNumber   String    @unique
+  periodId     String // periode UPLOAD (bukan tanggal di dalam data)
+  partNumber   String
   date         DateTime  @db.Date
   previousDate DateTime? @db.Date
   biTotal      Float
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+  period PlanningCycle @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  @@unique([periodId, partNumber])
+  @@index([periodId])
   @@index([partNumber])
   @@index([date])
   @@map("hotlists")
@@ -295,15 +396,25 @@ model Hotlist {
 
 model StockRawMaterial {
   id        String   @id @default(cuid())
+  periodId  String // periode UPLOAD (bukan tanggal di dalam data)
   itemDesc  String
   date      DateTime @db.Date
   supplier  String?
   qty       Float
   unit      String
+  // Referensi customer/PO dari kolom Excel `Ref_B_PO`. Field SERAGAM untuk kedua
+  // jenis data (Stock Raw Material & Outstanding PO). Hanya baris yang nilainya
+  // mengandung "MTL" yang boleh masuk (lihat lib/excelRef.ts).
+  refB      String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  period PlanningCycle @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  @@index([periodId])
   @@index([date])
+  @@index([periodId, itemDesc, supplier])
+  @@index([periodId, refB])
   @@map("stock_raw_materials")
 }
 
@@ -313,17 +424,31 @@ model StockRawMaterial {
 
 model OutstandingPO {
   id               String   @id @default(cuid())
+  periodId         String // periode UPLOAD (bukan tanggal di dalam data)
+  // Nomor PO dari kolom `PO NO` file Excel. WAJIB diisi (mandatory).
+  // TIDAK unik: satu nomor PO boleh dipakai beberapa baris/item.
+  poNumber         String
   planReceivedDate DateTime @db.Date
   supplierName     String
   itemDesc         String
   qtyOrder         Float
-  qtyOrderUnit     String   // "kg", "rim", "sheets"
+  qtyOrderUnit     String // "kg", "rim", "sheets"
   qtyDelivered     Float
-  qtyDeliveredUnit String   // "kg", "rim", "sheets"
+  qtyDeliveredUnit String // "kg", "rim", "sheets"
+  // Referensi customer/PO dari kolom Excel `PR Ref-B`. Field SERAGAM untuk kedua
+  // jenis data (Outstanding PO & Stock Raw Material). Hanya baris yang nilainya
+  // mengandung "MTL" yang boleh masuk (lihat lib/excelRef.ts).
+  refB             String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  period PlanningCycle @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  @@index([periodId])
   @@index([planReceivedDate])
+  @@index([periodId, itemDesc, supplierName])
+  @@index([periodId, poNumber])
+  @@index([periodId, refB])
   @@map("outstanding_pos")
 }
 
@@ -355,8 +480,8 @@ model NpofMaterial {
 
 // Immutable monthly snapshots of material calculations and their source data.
 model CalculationHistory {
-  id             String   @id @default(cuid())
-  monthKey       String   // YYYY-MM folder key
+  id              String   @id @default(cuid())
+  monthKey        String // YYYY-MM folder key
   periodStartDate DateTime @db.Date
   periodEndDate   DateTime @db.Date
   periodWeeks     Int
@@ -365,7 +490,7 @@ model CalculationHistory {
   savedBy         String
   resultSnapshot  Json
 
-  user    User @relation(fields: [savedBy], references: [id])
+  user    User                        @relation(fields: [savedBy], references: [id])
   sources CalculationSourceSnapshot[]
 
   @@index([monthKey])
@@ -374,11 +499,11 @@ model CalculationHistory {
 }
 
 model CalculationSourceSnapshot {
-  id          String   @id @default(cuid())
-  historyId   String
-  sourceType  String   // MRP, NPOF, StockRawMaterial, WIP, HOTLIST, OutstandingPO
+  id           String   @id @default(cuid())
+  historyId    String
+  sourceType   String // MRP, NPOF, StockRawMaterial, WIP, HOTLIST, OutstandingPO
   dataSnapshot Json
-  createdAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
 
   history CalculationHistory @relation(fields: [historyId], references: [id], onDelete: Cascade)
 
@@ -388,15 +513,28 @@ model CalculationSourceSnapshot {
 }
 
 // ============================================
-// PLANNING CYCLE (Material Planning)
+// PLANNING CYCLE (Periode Data)
 // ============================================
 // Satu cycle = satu periode bulanan yang TERISOLASI penuh dari cycle lain.
-// Semua tabel data wajib punya cycleId (NOT NULL) dan semua @@unique SELALU
-// diawali cycleId, supaya tidak mungkin ada unique global yang bocor antar periode.
+//
+// Sejak 2026-09-28, TIDAK ADA lagi tabel snapshot Cycle*: tabel Master Data
+// (weekly_schedules, wips, hotlists, stock_raw_materials, outstanding_pos)
+// menjadi penyimpanan data periode lewat kolom `periodId`.
+// Aturannya sama seperti sebelumnya, hanya pindah tabel:
+//   - `periodId` NOT NULL di semua tabel data periode
+//   - semua @@unique SELALU diawali `periodId`
+//   - overwrite = deleteMany({ where: { periodId } }) lalu insert
+// Tabel di bawah ini hanya berisi METADATA periode + hasil perhitungan.
 
 enum CycleStatus {
   DRAFT // data sedang disiapkan, belum dihitung
   CALCULATED // minimal sudah dihitung sekali (TETAP boleh diedit)
+}
+
+/// Jenis kolam material: lot stok raw material atau baris Outstanding PO.
+enum MaterialPoolKind {
+  STOCK
+  PO
 }
 
 model PlanningCycle {
@@ -404,18 +542,28 @@ model PlanningCycle {
 
   // ── Identitas BERBASIS BATCH UPLOAD, bukan tanggal di dalam data ──
   uploadMonth String // "2026-09" — otomatis dari waktu upload
-  label       String @unique // "September 2026" — otomatis, bisa diedit
+  label       String      @unique // "September 2026" — otomatis, bisa diedit
   status      CycleStatus @default(DRAFT)
 
   // ── Metadata deskriptif dari file MRP (untuk tampilan & perhitungan) ──
-  mrpStartDate DateTime @db.Date
-  mrpEndDate   DateTime @db.Date
-  weekCount    Int      @default(26)
+  // Optional: periode bisa dibuat dari upload Stock/PO/Hotlist/WIP saja,
+  // tanpa file MRP. Diisi/diperbarui saat MRP diupload.
+  mrpStartDate DateTime? @db.Date
+  mrpEndDate   DateTime? @db.Date
+  weekCount    Int       @default(26)
 
   // ── Jejak waktu ──
   firstUploadedAt    DateTime  @default(now())
   lastUploadedAt     DateTime  @default(now())
   lastDataChangeAt   DateTime  @default(now())
+  // Jejak EDIT MANUAL terakhir (ubah/hapus baris setelah upload). Upload sendiri
+  // dicatat lengkap di `cycle_source_uploads` (waktu + user + file).
+  lastEditedAt       DateTime?
+  lastEditedBy       String?
+  // Jejak perubahan DATA AKTIF terakhir oleh siapa & dari mana (UPLOAD | EDIT |
+  // ROLLBACK). Dipakai strip info di tab Data Aktif.
+  lastDataChangeBy   String?
+  lastDataChangeKind String?
   calculatedAt       DateTime?
   calculatedBy       String?
   calculatedRunCount Int       @default(0)
@@ -434,14 +582,18 @@ model PlanningCycle {
   createdAt DateTime @default(now())
   createdBy String
 
-  mrpWeeks  CycleMRPWeek[]
-  hotlists  CycleHotlist[]
-  stocks    CycleStockRM[]
-  pos       CycleOutstandingPO[]
-  wips      CycleWIP[]
-  uploads   CycleSourceUpload[]
-  results   CycleResult[]
-  auditLogs CycleAuditLog[]
+  // ── Data Master Data milik periode ini (langsung, BUKAN snapshot) ──
+  weeklySchedules WeeklySchedule[]
+  hotlists        Hotlist[]
+  stocks          StockRawMaterial[]
+  pos             OutstandingPO[]
+  wips            WIP[]
+
+  uploads     CycleSourceUpload[]
+  mrpVersions MrpVersion[]
+  results     CycleResult[]
+  auditLogs   CycleAuditLog[]
+  exclusions  MaterialCalcExclusion[]
   // Catatan: TIDAK ada relasi ke NPOF — dipakai bersama semua periode.
 
   @@unique([uploadMonth])
@@ -468,83 +620,11 @@ model CycleSourceUpload {
   @@map("cycle_source_uploads")
 }
 
-// MRP 26 minggu. weekNumber 1..26 relatif terhadap file MRP yang diupload.
-model CycleMRPWeek {
-  id            String   @id @default(cuid())
-  cycleId       String
-  partNumber    String
-  description   String?
-  year          Int
-  weekNumber    Int
-  weekStartDate DateTime @db.Date
-  weekEndDate   DateTime @db.Date
-  quantity      Float
-
-  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
-
-  @@unique([cycleId, partNumber, year, weekNumber])
-  @@index([cycleId, weekStartDate])
-  @@index([cycleId, partNumber])
-  @@map("cycle_mrp_weeks")
-}
-
-model CycleHotlist {
-  id         String @id @default(cuid())
-  cycleId    String
-  partNumber String
-  biTotal    Float
-
-  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
-
-  @@unique([cycleId, partNumber])
-  @@map("cycle_hotlists")
-}
-
-// Stock Raw Material — SEMUA lot disimpan, bukan hanya yang terbaru.
-model CycleStockRM {
-  id       String   @id @default(cuid())
-  cycleId  String
-  itemDesc String
-  supplier String?
-  qty      Float
-  unit     String
-  date     DateTime @db.Date
-
-  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
-
-  @@index([cycleId, itemDesc, supplier])
-  @@map("cycle_stock_rm")
-}
-
-model CycleOutstandingPO {
-  id               String   @id @default(cuid())
-  cycleId          String
-  itemDesc         String
-  supplierName     String
-  qtyOrder         Float
-  qtyOrderUnit     String
-  qtyDelivered     Float
-  qtyDeliveredUnit String
-  planReceivedDate DateTime @db.Date
-
-  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
-
-  @@index([cycleId, itemDesc, supplierName])
-  @@map("cycle_outstanding_po")
-}
-
-model CycleWIP {
-  id         String @id @default(cuid())
-  cycleId    String
-  partNumber String
-  location   String
-  quantity   Float
-
-  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
-
-  @@unique([cycleId, partNumber, location])
-  @@map("cycle_wips")
-}
+// CATATAN (2026-09-28): model snapshot CycleMRPWeek / CycleHotlist / CycleStockRM /
+// CycleOutstandingPO / CycleWIP SUDAH DIHAPUS. Sejak periode dipindahkan ke Master
+// Data (`periodId` di weekly_schedules / hotlists / stock_raw_materials /
+// outstanding_pos / wips), tabel snapshot menjadi duplikasi dan tidak lagi dipakai.
+// Data periode kini dibaca LANGSUNG dari tabel Master Data dengan filter periodId.
 
 // Hasil kalkulasi: SATU BARIS PER RUN (mendukung simpan versi).
 model CycleResult {
@@ -561,13 +641,19 @@ model CycleResult {
   dataVersionAt   DateTime
 
   /// Tepat satu baris per periode yang isCurrent = true.
-  isCurrent       Boolean  @default(false)
+  isCurrent Boolean @default(false)
   /// isSaved = true -> baris ini TIDAK dihapus saat ada perhitungan baru.
-  isSaved         Boolean  @default(false)
-  savedNote       String?  @db.Text
+  isSaved   Boolean @default(false)
+  savedNote String? @db.Text
 
   resultSnapshot  Json // groups + weeklyMatrix 26 kolom
   summarySnapshot Json?
+
+  /// Checksum (snapshot ringkas) data master PER SUMBER tepat saat perhitungan
+  /// dijalankan: { rows, sum, lastUpdatedAt }. Dipakai untuk mendeteksi
+  /// "Calculation tidak valid karena ada perubahan data" ketika folder periode
+  /// dibuka kembali — tanpa perlu menyimpan seluruh isi data master.
+  dataSignature Json?
 
   cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
 
@@ -598,4 +684,54 @@ model CycleAuditLog {
   @@index([cycleId, sourceType])
   @@index([userId])
   @@map("cycle_audit_logs")
+}
+
+/// Material dari kolam (lot stok / baris Outstanding PO) yang DIKELUARKAN user
+/// dari perhitungan SATU ukuran (grup) tertentu.
+///
+/// Dipakai ketika sebuah material sebenarnya TIDAK ikut dalam perhitungan ukuran
+/// ini — mis. karena ukurannya hanya kelipatan (117 cm untuk 58,5 cm) atau karena
+/// material itu sudah dipakai ukuran lain. Selama baris ini ada, pool item
+/// tersebut DILEWATI untuk grup itu, sehingga otomatis jadi tersedia bagi grup
+/// lain (alokasi dijalankan ulang oleh endpoint-nya).
+///
+/// Berlaku PER PERIODE (periode terisolasi). MENGHAPUS baris = memakai material
+/// itu lagi untuk grup tersebut — jalur "kembalikan".
+model MaterialCalcExclusion {
+  id      String           @id @default(cuid())
+  cycleId String
+  kind    MaterialPoolKind
+
+  /// `${ukuran}||${gramatur}||${supplier}` — WAJIB sama dengan `groupKey` di
+  /// materialCalcEngine.ts, kalau tidak pengecualian tidak akan terbaca.
+  groupKey String
+
+  /// Identitas pool item: STOCK = `${itemDesc}||${supplier}` (hasil agregasi lot),
+  /// PO = `id` baris `outstanding_pos`.
+  poolRef String
+
+  /// Snapshot teks untuk tampilan & jejak audit — TIDAK dipakai perhitungan.
+  groupLabel String
+  poolLabel  String
+
+  /// Jumlah yang DIKELUARKAN dari ukuran ini — hanya untuk pengecualian
+  /// SEBAGIAN (2026-10-15): user boleh memakai sebagian qty lot/PO, sisanya
+  /// dikeluarkan dari ukuran ini agar bisa dipakai ukuran lain.
+  /// NULL / 0 = seluruh pool item dikeluarkan (perilaku lama).
+  qty Float?
+
+  /// Satuan `qty`: `kg` (bagian bersatuan kg) atau `sheet` (bagian lembar).
+  unit String?
+
+  /// Alasan user (wajib diisi lewat UI, boleh kosong dari API).
+  reason    String?   @db.Text
+  createdBy String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  cycle PlanningCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@unique([cycleId, kind, groupKey, poolRef])
+  @@index([cycleId, groupKey])
+  @@map("material_calc_exclusions")
 }

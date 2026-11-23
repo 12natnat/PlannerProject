@@ -1,10 +1,33 @@
-import { useState, useRef, useMemo } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useHotlist, useUploadHotlist, useAddManualHotlist, useUpdateHotlist, useDeleteHotlist, useBulkDeleteHotlist, useImportHotlist, type HotlistData } from '../hooks/useHotlist';
-import { FileSpreadsheet, Plus, Upload, Loader2, Search, Pencil, Trash2, X, Check, Save, Folder, ArrowLeft } from 'lucide-react';
+import { usePeriods, useCreatePeriod, monthLabel, periodDisplayLabel } from '../hooks/usePeriods';
+import { PeriodSelect } from '../components/PeriodSelect';
+import { PeriodMeta } from '../components/PeriodMeta';
+import { FileSpreadsheet, Plus, Upload, Loader2, Search, Pencil, Trash2, X, Check, Save, Folder, ArrowLeft, CalendarPlus, Lock } from 'lucide-react';
 import { format } from 'date-fns';
+import { useTranslation } from '../i18n';
+import { useAuthStore } from '../stores/authStore';
 
 export function Hotlist() {
-  const { data: hotlistData, isLoading } = useHotlist();
+  const { t, lang, locale, dateLocale } = useTranslation();
+  // Master Data "BI TOTAL" hanya boleh diubah oleh Admin & Material Planner;
+  // Production Planner / User view-only.
+  const canEditDataModule = useAuthStore((state) => state.canEditDataModule);
+  const canManageData = canEditDataModule('MATERIAL');
+  // Periode = keranjang data. WAJIB dipilih sebelum upload/isi manual.
+  const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
+  // Periode tujuan untuk Import Excel / Isi Manual. Ikut periode yang sedang
+  // dibuka, tapi tetap bisa diganti langsung dari dalam modal.
+  const [targetPeriodId, setTargetPeriodId] = useState<string | null>(null);
+  useEffect(() => {
+    if (selectedPeriodId) setTargetPeriodId(selectedPeriodId);
+  }, [selectedPeriodId]);
+  const [newPeriodMonth, setNewPeriodMonth] = useState('');
+  const { data: periodsRes, isLoading: periodsLoading } = usePeriods();
+  const periods = periodsRes?.data ?? [];
+  const selectedPeriod = periods.find((p) => p.id === selectedPeriodId) ?? null;
+  const createPeriod = useCreatePeriod();
+  const { data: hotlistData, isLoading } = useHotlist(selectedPeriodId);
   const uploadMutation = useUploadHotlist();
   const importMutation = useImportHotlist();
   const addManualMutation = useAddManualHotlist();
@@ -49,14 +72,14 @@ export function Hotlist() {
         if (res.data && res.data.length > 0) {
           setPreviewData(res.data);
         } else {
-          alert('No valid data found in file.');
+          alert(t('hotlist.errors.noValidData'));
         }
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
         }
       },
       onError: (error: any) => {
-        alert(`Failed to upload file: ${error.message}`);
+        alert(t('hotlist.errors.uploadFailed', { message: error.message }));
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
         }
@@ -64,25 +87,48 @@ export function Hotlist() {
     });
   };
 
+  const handleCreatePeriod = async () => {
+    if (!newPeriodMonth) return;
+    try {
+      const res = await createPeriod.mutateAsync({ uploadMonth: newPeriodMonth });
+      setNewPeriodMonth('');
+      setSelectedPeriodId(res.data.id);
+    } catch (error: any) {
+      alert(error.message || t('hotlist.errors.createPeriodFailed'));
+    }
+  };
+
   const handleSaveImport = (mode: 'add' | 'overwrite') => {
     if (previewData.length === 0) return;
-    
-    let confirmMsg = 'Are you sure you want to add this data?';
+    if (!targetPeriodId) {
+      alert(t('hotlist.errors.selectPeriodFirst'));
+      return;
+    }
+
+    let confirmMsg = t('hotlist.import.addConfirm', {
+      count: previewData.length,
+      label: selectedPeriod?.label ?? '',
+    });
     if (mode === 'overwrite') {
-      confirmMsg = 'WARNING: This will delete ALL existing hotlist data and replace it with the uploaded data. Continue?';
+      const existing = selectedPeriod?.counts.HOTLIST ?? 0;
+      confirmMsg = t('hotlist.import.overwriteConfirm', {
+        label: selectedPeriod?.label ?? '',
+        existing,
+        count: previewData.length,
+      });
     }
 
     if (!window.confirm(confirmMsg)) return;
 
-    importMutation.mutate({ data: previewData, mode }, {
+    importMutation.mutate({ data: previewData, mode, periodId: targetPeriodId }, {
       onSuccess: () => {
-        alert('Data imported successfully!');
+        alert(t('hotlist.import.success'));
         setPreviewData([]);
         setPreviewSearchTerm('');
         setPreviewEditingIndex(null);
       },
       onError: (error: any) => {
-        alert(`Failed to import data: ${error.message}`);
+        alert(t('hotlist.errors.importFailed', { message: error.message }));
       }
     });
   };
@@ -98,7 +144,7 @@ export function Hotlist() {
 
   const handlePreviewSaveEdit = (index: number) => {
     if (!previewEditForm.partNumber || !previewEditForm.date || !previewEditForm.biTotal) {
-      alert('Please fill all required fields');
+      alert(t('hotlist.errors.fillAllRequired'));
       return;
     }
     const updatedData = [...previewData];
@@ -113,7 +159,7 @@ export function Hotlist() {
   };
 
   const handlePreviewDelete = (index: number) => {
-    if (window.confirm('Are you sure you want to remove this record from the preview?')) {
+    if (window.confirm(t('hotlist.confirm.removePreview'))) {
       const updatedData = [...previewData];
       updatedData.splice(index, 1);
       setPreviewData(updatedData);
@@ -124,7 +170,12 @@ export function Hotlist() {
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualForm.partNumber || !manualForm.date || !manualForm.biTotal) {
-      alert('Please fill all fields');
+      alert(t('hotlist.errors.fillAllFields'));
+      return;
+    }
+
+    if (!targetPeriodId) {
+      alert(t('hotlist.errors.selectPeriodManual'));
       return;
     }
 
@@ -132,6 +183,7 @@ export function Hotlist() {
       partNumber: manualForm.partNumber,
       date: manualForm.date,
       biTotal: parseFloat(manualForm.biTotal),
+      periodId: targetPeriodId,
     }, {
       onSuccess: () => {
         setManualForm({
@@ -142,7 +194,7 @@ export function Hotlist() {
         setIsManualOpen(false);
       },
       onError: (error: any) => {
-        alert(`Failed to add record: ${error.message}`);
+        alert(t('hotlist.errors.addFailed', { message: error.message }));
       }
     });
   };
@@ -158,7 +210,7 @@ export function Hotlist() {
 
   const handleSaveEdit = (id: string) => {
     if (!editForm.partNumber || !editForm.date || !editForm.biTotal) {
-      alert('Please fill all fields');
+      alert(t('hotlist.errors.fillAllFields'));
       return;
     }
 
@@ -174,16 +226,16 @@ export function Hotlist() {
         setEditingId(null);
       },
       onError: (error: any) => {
-        alert(`Failed to update record: ${error.message}`);
+        alert(t('hotlist.errors.updateFailed', { message: error.message }));
       }
     });
   };
 
   const handleDelete = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this record?')) {
+    if (window.confirm(t('hotlist.confirm.deleteOne'))) {
       deleteMutation.mutate(id, {
         onError: (error: any) => {
-          alert(`Failed to delete record: ${error.message}`);
+          alert(t('hotlist.errors.deleteFailed', { message: error.message }));
         }
       });
     }
@@ -207,39 +259,21 @@ export function Hotlist() {
 
   const handleBulkDelete = () => {
     if (selectedIds.length === 0) return;
-    if (window.confirm(`Are you sure you want to delete ${selectedIds.length} records?`)) {
+    if (window.confirm(t('hotlist.confirm.deleteMany', { count: selectedIds.length }))) {
       bulkDeleteMutation.mutate(selectedIds, {
         onSuccess: () => {
           setSelectedIds([]);
         },
         onError: (error: any) => {
-          alert(`Failed to delete records: ${error.message}`);
+          alert(t('hotlist.errors.bulkDeleteFailed', { message: error.message }));
         }
       });
     }
   };
 
-  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
-
   const records = hotlistData?.data || [];
-  
-  const groupedMonths = useMemo(() => {
-    const groups: Record<string, HotlistData[]> = {};
-    records.forEach(record => {
-      const monthKey = format(new Date(record.date), 'yyyy-MM');
-      if (!groups[monthKey]) groups[monthKey] = [];
-      groups[monthKey].push(record);
-    });
-    return Object.entries(groups).sort((a, b) => b[0].localeCompare(a[0]));
-  }, [records]);
 
-  const currentMonthRecords = selectedMonth
-    ? selectedMonth === 'ALL'
-      ? records
-      : (groupedMonths.find(g => g[0] === selectedMonth)?.[1] || [])
-    : [];
-
-  const filteredRecords = currentMonthRecords.filter(record => 
+  const filteredRecords = records.filter(record => 
     record.partNumber.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
@@ -247,81 +281,86 @@ export function Hotlist() {
     record.partNumber.toLowerCase().includes(previewSearchTerm.toLowerCase())
   );
 
+  /** Jumlah kolom tabel utama: checkbox + Part Number + Tanggal + BI Total + Aksi. */
+  const tableColCount = canManageData ? 5 : 3;
+
   return (
     <div className="space-y-6">
       {/* Page Title & Breadcrumb */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">HOTLIST</h1>
+          <h1 className="text-2xl font-bold tracking-tight">BI TOTAL (DLV + Finish Goods)</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Manage hotlist data for items. Upload from Excel or add manually.
+            {t('hotlist.subtitle')}
           </p>
         </div>
         
-        <div className="flex gap-2">
-          <input
-            type="file"
-            ref={fileInputRef}
-            className="hidden"
-            accept=".xlsx, .xls, .xlsm"
-            onChange={handleFileUpload}
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploadMutation.isPending || previewData.length > 0}
-            className="flex items-center gap-2 px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-md font-medium text-sm transition-colors"
-          >
-            {uploadMutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Upload className="w-4 h-4" />
-            )}
-            Upload Excel
-          </button>
-          
-          <button
-            onClick={() => setIsManualOpen(!isManualOpen)}
-            disabled={previewData.length > 0}
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md font-medium text-sm transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            Isi Manual
-          </button>
-        </div>
+        {canManageData && (
+          <div className="flex gap-2">
+            <input
+              type="file"
+              ref={fileInputRef}
+              className="hidden"
+              accept=".xlsx, .xls, .xlsm"
+              onChange={handleFileUpload}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadMutation.isPending || previewData.length > 0}
+              className="flex items-center gap-2 px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-md font-medium text-sm transition-colors"
+            >
+              {uploadMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4" />
+              )}
+              {t('hotlist.uploadExcel')}
+            </button>
+
+            <button
+              onClick={() => setIsManualOpen(!isManualOpen)}
+              disabled={previewData.length > 0}
+              className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md font-medium text-sm transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              {t('hotlist.manualEntry')}
+            </button>
+          </div>
+        )}
       </div>
 
-      {previewData.length > 0 ? (
+      {canManageData && previewData.length > 0 ? (
         <div className="bg-card border border-primary/20 rounded-lg shadow-md overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
           <div className="p-5 border-b bg-primary/5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h2 className="text-lg font-bold text-primary flex items-center gap-2">
                 <FileSpreadsheet className="w-5 h-5" />
-                Data Preview
+                {t('hotlist.preview.title')}
               </h2>
               <p className="text-sm text-muted-foreground mt-1">
-                You are about to import <strong>{previewData.length}</strong> records. Please review the data below and choose how to save.
+                {t('hotlist.preview.aboutPrefix')} <strong>{previewData.length}</strong> {t('hotlist.preview.aboutSuffix')}
               </p>
             </div>
             <div className="flex flex-wrap gap-2 items-center">
               <div className="relative w-full sm:w-64 mr-2">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
-                <input type="text" placeholder="Search preview..." className="w-full pl-9 pr-4 py-1.5 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" value={previewSearchTerm} onChange={(e) => setPreviewSearchTerm(e.target.value)} />
+                <input type="text" placeholder={t('hotlist.preview.searchPlaceholder')} className="w-full pl-9 pr-4 py-1.5 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" value={previewSearchTerm} onChange={(e) => setPreviewSearchTerm(e.target.value)} />
               </div>
               <button
                 onClick={() => handleSaveImport('add')}
-                disabled={importMutation.isPending}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-md font-medium text-sm transition-colors"
+                disabled={importMutation.isPending || !targetPeriodId}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-md font-medium text-sm transition-colors disabled:opacity-50"
               >
                 {importMutation.isPending && importMutation.variables?.mode === 'add' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                Save (Add)
+                {t('hotlist.preview.saveAdd')}
               </button>
               <button
                 onClick={() => handleSaveImport('overwrite')}
-                disabled={importMutation.isPending}
-                className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white hover:bg-red-700 rounded-md font-medium text-sm transition-colors"
+                disabled={importMutation.isPending || !targetPeriodId}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white hover:bg-red-700 rounded-md font-medium text-sm transition-colors disabled:opacity-50"
               >
                 {importMutation.isPending && importMutation.variables?.mode === 'overwrite' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                Save (Overwrite)
+                {t('hotlist.preview.saveOverwrite')}
               </button>
               <button
                 onClick={() => setPreviewData([])}
@@ -329,23 +368,26 @@ export function Hotlist() {
                 className="flex items-center gap-2 px-4 py-2 bg-muted text-muted-foreground hover:bg-muted/80 rounded-md font-medium text-sm transition-colors"
               >
                 <X className="w-4 h-4" />
-                Cancel
+                {t('common.cancel')}
               </button>
             </div>
+          </div>
+          <div className="px-5 py-4 border-b bg-amber-50/40 dark:bg-amber-500/5">
+            <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="max-w-md" />
           </div>
           <div className="max-h-[60vh] overflow-auto">
             <table className="w-full text-sm text-left">
               <thead className="text-xs text-muted-foreground uppercase bg-secondary/50 sticky top-0 z-10 shadow-sm">
                 <tr>
-                  <th className="px-6 py-4 font-semibold w-1/3">Part Number</th>
-                  <th className="px-6 py-4 font-semibold">Date</th>
-                  <th className="px-6 py-4 font-semibold">BI Total</th>
-                  <th className="px-6 py-4 font-semibold text-right">Aksi</th>
+                  <th className="px-6 py-4 font-semibold w-1/3">{t('hotlist.table.partNumber')}</th>
+                  <th className="px-6 py-4 font-semibold">{t('common.date')}</th>
+                  <th className="px-6 py-4 font-semibold">{t('hotlist.table.biTotal')}</th>
+                  <th className="px-6 py-4 font-semibold text-right">{t('common.actions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {filteredPreviewData.length === 0 ? (
-                   <tr><td colSpan={4} className="px-6 py-8 text-center text-muted-foreground">No matching data found in preview.</td></tr>
+                   <tr><td colSpan={4} className="px-6 py-8 text-center text-muted-foreground">{t('hotlist.preview.noData')}</td></tr>
                 ) : filteredPreviewData.map((record) => {
                   const originalIndex = previewData.indexOf(record);
                   return (
@@ -378,10 +420,10 @@ export function Hotlist() {
                             </span>
                           </td>
                           <td className="px-6 py-3 font-medium">
-                            {format(new Date(record.date), 'dd MMM yyyy')}
+                            {format(new Date(record.date), 'dd MMM yyyy', { locale: dateLocale })}
                           </td>
                           <td className="px-6 py-3">
-                            <span className="font-bold">{record.biTotal.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 })}</span>
+                            <span className="font-bold">{record.biTotal.toLocaleString(locale, { minimumFractionDigits: 1, maximumFractionDigits: 2 })}</span>
                           </td>
                           <td className="px-6 py-3 text-right">
                             <div className="flex items-center justify-end gap-1">
@@ -403,23 +445,28 @@ export function Hotlist() {
       ) : (
         <>
           {/* Manual Entry Form */}
-          {isManualOpen && (
+          {canManageData && isManualOpen && (
             <div className="bg-card border rounded-lg p-5 shadow-sm animate-in slide-in-from-top-2">
-              <h2 className="text-sm font-semibold mb-4">Input Hotlist Manual</h2>
+              <h2 className="text-sm font-semibold mb-4">{t('hotlist.manual.title')}</h2>
               <form onSubmit={handleManualSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                <PeriodSelect
+                  value={targetPeriodId}
+                  onChange={setTargetPeriodId}
+                  className="md:col-span-4"
+                />
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-muted-foreground uppercase">Part Number</label>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase">{t('hotlist.table.partNumber')}</label>
                   <input
                     type="text"
                     className="w-full h-10 px-3 border rounded-md text-sm"
-                    placeholder="e.g. JKG12-4399T"
+                    placeholder={t('hotlist.manual.partNumberPlaceholder')}
                     value={manualForm.partNumber}
                     onChange={(e) => setManualForm({ ...manualForm, partNumber: e.target.value })}
                     required
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-muted-foreground uppercase">Date</label>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase">{t('common.date')}</label>
                   <input
                     type="date"
                     className="w-full h-10 px-3 border rounded-md text-sm"
@@ -429,7 +476,7 @@ export function Hotlist() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-muted-foreground uppercase">BI Total</label>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase">{t('hotlist.table.biTotal')}</label>
                   <input
                     type="number"
                     step="0.01"
@@ -443,18 +490,18 @@ export function Hotlist() {
                 <div className="flex gap-2">
                   <button
                     type="submit"
-                    disabled={addManualMutation.isPending}
-                    className="h-10 px-6 bg-primary text-primary-foreground rounded-md font-medium text-sm w-full md:w-auto flex items-center justify-center gap-2"
+                    disabled={addManualMutation.isPending || !targetPeriodId}
+                    className="h-10 px-6 bg-primary text-primary-foreground rounded-md font-medium text-sm w-full md:w-auto flex items-center justify-center gap-2 disabled:opacity-50"
                   >
                     {addManualMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-                    Simpan
+                    {t('common.save')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setIsManualOpen(false)}
                     className="h-10 px-4 bg-muted text-muted-foreground rounded-md font-medium text-sm"
                   >
-                    Batal
+                    {t('common.cancel')}
                   </button>
                 </div>
               </form>
@@ -462,62 +509,71 @@ export function Hotlist() {
           )}
 
           {/* Folder View or Data Table */}
-          {!selectedMonth ? (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in zoom-in-95 duration-200">
-              {groupedMonths.length === 0 && !isLoading && (
-                <div className="col-span-full py-12 text-center text-muted-foreground border rounded-lg bg-card">
+          {!selectedPeriodId ? (
+            <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
+              {periods.length === 0 && !periodsLoading && (
+                <div className="py-12 text-center text-muted-foreground border rounded-lg bg-card">
                   <FileSpreadsheet className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
-                  <p className="text-base font-semibold">Tidak ada data HOTLIST</p>
-                  <p className="text-sm mt-1">Upload excel atau isi manual untuk menambahkan data.</p>
+                  <p className="text-base font-semibold">{t('hotlist.period.none')}</p>
+                  <p className="text-sm mt-1">
+                    {t('hotlist.period.noneHint')}
+                  </p>
                 </div>
               )}
-              {records.length > 0 && (
-                <div
-                  onClick={() => setSelectedMonth('ALL')}
-                  className="cursor-pointer p-5 border-2 border-indigo-500/30 bg-gradient-to-br from-indigo-500/5 to-purple-500/10 hover:from-indigo-500/10 hover:to-purple-500/20 hover:border-indigo-500/60 rounded-lg transition-all flex items-center gap-4 group shadow-sm relative overflow-hidden"
-                >
-                  <div className="p-3 bg-indigo-500/15 rounded-lg group-hover:bg-indigo-500/25 transition-colors">
-                    <Folder className="w-8 h-8 text-indigo-600 dark:text-indigo-400 fill-indigo-500/20" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-bold text-foreground group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                        Semua Data
-                      </h3>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 uppercase tracking-wider">
-                        All
-                      </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                {periods.map((p) => (
+                  <div
+                    key={p.id}
+                    onClick={() => setSelectedPeriodId(p.id)}
+                    className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex flex-wrap items-center gap-x-4 gap-y-2 group shadow-sm"
+                  >
+                    <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
+                      <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
                     </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">{records.length} Items (Total)</p>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="font-semibold text-foreground flex items-center gap-1.5">
+                        <span className="truncate">{periodDisplayLabel(p, lang)}</span>
+                        {p.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {t('hotlist.period.counts', { hotlist: p.counts.HOTLIST, mrp: p.counts.MRP })}
+                      </p>
+                    </div>
+                    <PeriodMeta period={p} className="w-full" />
                   </div>
-                </div>
-              )}
-              {groupedMonths.map(([monthKey, monthRecords]) => (
-                <div
-                  key={monthKey}
-                  onClick={() => setSelectedMonth(monthKey)}
-                  className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
-                >
-                  <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
-                    <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
+                ))}
+
+                {canManageData && (
+                  <div className="p-5 border-2 border-dashed rounded-lg bg-card flex flex-col gap-3 justify-center">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+                      <CalendarPlus className="w-4 h-4" /> {t('hotlist.period.createTitle')}
+                    </div>
+                    <input
+                      type="month"
+                      value={newPeriodMonth}
+                      onChange={(e) => setNewPeriodMonth(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                    <button
+                      onClick={handleCreatePeriod}
+                      disabled={!newPeriodMonth || createPeriod.isPending}
+                      className="w-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 px-3 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2"
+                    >
+                      {createPeriod.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                      {t('hotlist.period.create')} {newPeriodMonth ? monthLabel(newPeriodMonth, lang) : t('hotlist.period.fallbackLabel')}
+                    </button>
                   </div>
-                  <div>
-                    <h3 className="font-semibold text-foreground">
-                      {format(new Date(monthKey + '-01'), 'MMMM yyyy')}
-                    </h3>
-                    <p className="text-xs text-muted-foreground mt-0.5">{monthRecords.length} Items</p>
-                  </div>
-                </div>
-              ))}
+                )}
+              </div>
             </div>
           ) : (
             <div className="bg-card border rounded-lg shadow-sm overflow-hidden flex flex-col animate-in fade-in slide-in-from-bottom-2 duration-200">
               <div className="p-4 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-muted/20">
                 <div className="flex items-center gap-3 w-full sm:w-auto">
                   <button 
-                    onClick={() => setSelectedMonth(null)}
+                    onClick={() => setSelectedPeriodId(null)}
                     className="p-2 hover:bg-background rounded-md border text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                    title="Kembali ke Folder"
+                    title={t('hotlist.period.backToList')}
                   >
                     <ArrowLeft className="w-4 h-4" />
                   </button>
@@ -525,7 +581,7 @@ export function Hotlist() {
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
                     <input
                       type="text"
-                      placeholder={selectedMonth === 'ALL' ? 'Cari di semua data...' : `Cari di ${format(new Date(selectedMonth + '-01'), 'MMM yyyy')}...`}
+                      placeholder={t('hotlist.searchIn', { label: selectedPeriod?.label ?? '' })}
                       className="w-full pl-9 pr-4 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary"
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
@@ -533,18 +589,18 @@ export function Hotlist() {
                   </div>
                 </div>
               <div className="flex items-center gap-3">
-                {selectedIds.length > 0 && (
+                {canManageData && selectedIds.length > 0 && (
                   <button
                     onClick={handleBulkDelete}
                     disabled={bulkDeleteMutation.isPending}
                     className="flex items-center gap-2 px-3 py-1.5 bg-destructive text-destructive-foreground hover:bg-destructive/90 rounded-md font-medium text-sm transition-colors animate-in fade-in"
                   >
                     {bulkDeleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                    Hapus ({selectedIds.length})
+                    {t('hotlist.bulkDelete', { count: selectedIds.length })}
                   </button>
                 )}
                 <div className="text-sm font-medium text-muted-foreground bg-background px-3 py-1.5 border rounded-md">
-                  Total Data: {filteredRecords.length}
+                  {t('hotlist.totalData', { count: filteredRecords.length })}
                 </div>
               </div>
             </div>
@@ -553,47 +609,53 @@ export function Hotlist() {
               <table className="w-full text-sm text-left">
                 <thead className="text-xs text-muted-foreground uppercase bg-secondary/50">
                   <tr>
-                    <th className="px-4 py-4 w-12 text-center">
-                      <input 
-                        type="checkbox" 
-                        className="rounded border-gray-300 w-4 h-4"
-                        checked={filteredRecords.length > 0 && selectedIds.length === filteredRecords.length}
-                        onChange={handleSelectAll}
-                      />
-                    </th>
-                    <th className="px-6 py-4 font-semibold w-1/3">Part Number</th>
-                    <th className="px-6 py-4 font-semibold">Date</th>
-                    <th className="px-6 py-4 font-semibold">BI Total</th>
-                    <th className="px-6 py-4 font-semibold text-right">Aksi</th>
+                    {canManageData && (
+                      <th className="px-4 py-4 w-12 text-center">
+                        <input 
+                          type="checkbox" 
+                          className="rounded border-gray-300 w-4 h-4"
+                          checked={filteredRecords.length > 0 && selectedIds.length === filteredRecords.length}
+                          onChange={handleSelectAll}
+                        />
+                      </th>
+                    )}
+                    <th className="px-6 py-4 font-semibold w-1/3">{t('hotlist.table.partNumber')}</th>
+                    <th className="px-6 py-4 font-semibold">{t('common.date')}</th>
+                    <th className="px-6 py-4 font-semibold">{t('hotlist.table.biTotal')}</th>
+                    {canManageData && (
+                      <th className="px-6 py-4 font-semibold text-right">{t('common.actions')}</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {isLoading ? (
                     <tr>
-                      <td colSpan={5} className="px-6 py-12 text-center text-muted-foreground">
+                      <td colSpan={tableColCount} className="px-6 py-12 text-center text-muted-foreground">
                         <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
-                        <p className="mt-2 text-sm font-medium">Memuat data...</p>
+                        <p className="mt-2 text-sm font-medium">{t('common.loading')}</p>
                       </td>
                     </tr>
                   ) : filteredRecords.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-6 py-12 text-center text-muted-foreground">
+                      <td colSpan={tableColCount} className="px-6 py-12 text-center text-muted-foreground">
                         <FileSpreadsheet className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
-                        <p className="text-base font-semibold">Tidak ada data HOTLIST</p>
-                        <p className="text-sm mt-1">Upload excel atau isi manual untuk menambahkan data.</p>
+                        <p className="text-base font-semibold">{t('hotlist.empty.title')}</p>
+                        <p className="text-sm mt-1">{t('hotlist.empty.hint')}</p>
                       </td>
                     </tr>
                   ) : (
                     filteredRecords.map((record) => (
                       <tr key={record.id} className="hover:bg-muted/30 transition-colors">
-                        <td className="px-4 py-3 text-center">
-                          <input 
-                            type="checkbox" 
-                            className="rounded border-gray-300 w-4 h-4"
-                            checked={selectedIds.includes(record.id)}
-                            onChange={(e) => handleSelectOne(e, record.id)}
-                          />
-                        </td>
+                        {canManageData && (
+                          <td className="px-4 py-3 text-center">
+                            <input 
+                              type="checkbox" 
+                              className="rounded border-gray-300 w-4 h-4"
+                              checked={selectedIds.includes(record.id)}
+                              onChange={(e) => handleSelectOne(e, record.id)}
+                            />
+                          </td>
+                        )}
                         {editingId === record.id ? (
                           <>
                             <td className="px-6 py-3">
@@ -648,41 +710,43 @@ export function Hotlist() {
                             </td>
                             <td className="px-6 py-3 font-medium">
                               <div className="flex flex-col gap-1">
-                                <span>{format(new Date(record.date), 'dd MMM yyyy')}</span>
+                                <span>{format(new Date(record.date), 'dd MMM yyyy', { locale: dateLocale })}</span>
                                 {record.previousDate && (
                                   <span className="text-xs text-muted-foreground flex items-center gap-1">
                                     <span className="w-1.5 h-1.5 rounded-full bg-orange-400"></span>
-                                    Prev: {format(new Date(record.previousDate), 'dd MMM yyyy')}
+                                    {t('hotlist.prevDate')} {format(new Date(record.previousDate), 'dd MMM yyyy', { locale: dateLocale })}
                                   </span>
                                 )}
                               </div>
                             </td>
                             <td className="px-6 py-3">
-                              <span className="font-bold">{record.biTotal.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 })}</span>
+                              <span className="font-bold">{record.biTotal.toLocaleString(locale, { minimumFractionDigits: 1, maximumFractionDigits: 2 })}</span>
                             </td>
-                            <td className="px-6 py-3 text-right">
-                              <div className="flex items-center justify-end gap-1">
-                                <button
-                                  onClick={() => handleEditClick(record)}
-                                  className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors"
-                                  title="Edit"
-                                >
-                                  <Pencil className="w-4 h-4" />
-                                </button>
-                                <button
-                                  onClick={() => handleDelete(record.id)}
-                                  disabled={deleteMutation.isPending && deleteMutation.variables === record.id}
-                                  className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded transition-colors"
-                                  title="Delete"
-                                >
-                                  {deleteMutation.isPending && deleteMutation.variables === record.id ? (
-                                    <Loader2 className="w-4 h-4 animate-spin text-destructive" />
-                                  ) : (
-                                    <Trash2 className="w-4 h-4" />
-                                  )}
-                                </button>
-                              </div>
-                            </td>
+                            {canManageData && (
+                              <td className="px-6 py-3 text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                  <button
+                                    onClick={() => handleEditClick(record)}
+                                    className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors"
+                                    title={t('common.edit')}
+                                  >
+                                    <Pencil className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDelete(record.id)}
+                                    disabled={deleteMutation.isPending && deleteMutation.variables === record.id}
+                                    className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded transition-colors"
+                                    title={t('common.delete')}
+                                  >
+                                    {deleteMutation.isPending && deleteMutation.variables === record.id ? (
+                                      <Loader2 className="w-4 h-4 animate-spin text-destructive" />
+                                    ) : (
+                                      <Trash2 className="w-4 h-4" />
+                                    )}
+                                  </button>
+                                </div>
+                              </td>
+                            )}
                           </>
                         )}
                       </tr>

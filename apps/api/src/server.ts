@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { config } from './config';
@@ -19,6 +20,7 @@ import outstandingPoRoutes from './routes/outstandingPo';
 import npofMaterialsRoutes from './routes/npofMaterials';
 import materialCalcRoutes from './routes/materialCalc';
 import materialPlanningRoutes from './routes/materialPlanning';
+import mrpVersionRoutes from './routes/mrpVersions';
 import historyRoutes from './routes/history';
 import fgStockHistoryRoutes from './routes/fgStockHistory';
 import { startCleanupSchedule, stopCleanupSchedule } from './lib/cleanup';
@@ -27,6 +29,11 @@ import multipart from '@fastify/multipart';
 
 const server = Fastify({
   bodyLimit: 52428800, // 50MB
+  // Di belakang Traefik (Dokploy), koneksi TCP datang dari container Traefik.
+  // Tanpa trustProxy, request.ip berisi IP Traefik untuk SEMUA user, sehingga
+  // rate limit menjadi satu kuota bersama seluruh perusahaan (dan 429 muncul
+  // acak). Aman di sini karena port API tidak dipublikasikan ke host.
+  trustProxy: true,
   logger: {
     level: config.nodeEnv === 'development' ? 'info' : 'warn',
     transport:
@@ -46,9 +53,12 @@ const server = Fastify({
 async function registerPlugins() {
   // CORS
   await server.register(cors, {
-    origin: config.nodeEnv === 'development' ? true : config.corsOrigin,
+    origin: config.nodeEnv === 'development' ? true : config.corsOrigins,
     credentials: true,
   });
+
+  // Cookie — dipakai untuk menyimpan refresh token sebagai cookie httpOnly.
+  await server.register(cookie);
 
   // Security headers
   await server.register(helmet, {
@@ -80,6 +90,7 @@ async function registerPlugins() {
   await server.register(trackingRoutes);
   await server.register(usersRoutes);
   await server.register(weeklyScheduleRoutes);
+  await server.register(mrpVersionRoutes);
   await server.register(hotlistRoutes);
   await server.register(stockRawMaterialRoutes);
   await server.register(outstandingPoRoutes);
