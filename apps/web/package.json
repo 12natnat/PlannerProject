@@ -14,6 +14,7 @@
     "@pdits/shared": "workspace:*",
     "@tanstack/react-query": "^5.100.10",
     "@tanstack/react-router": "^1.170.4",
+    "@tanstack/react-virtual": "^3.14.9",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "lucide-react": "^1.16.0",
@@ -22,7 +23,7 @@
     "react-hook-form": "^7.76.0",
     "recharts": "^3.8.1",
     "tailwind-merge": "^3.6.0",
-    "xlsx": "^0.18.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zustand": "^5.0.13"
   },
   "devDependencies": {

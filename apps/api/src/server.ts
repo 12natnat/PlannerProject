@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { config } from './config';
@@ -13,12 +14,26 @@ import wipRoutes from './routes/wip';
 import trackingRoutes from './routes/tracking';
 import usersRoutes from './routes/users';
 import weeklyScheduleRoutes from './routes/weeklySchedule';
+import hotlistRoutes from './routes/hotlist';
+import stockRawMaterialRoutes from './routes/stockRawMaterial';
+import outstandingPoRoutes from './routes/outstandingPo';
+import npofMaterialsRoutes from './routes/npofMaterials';
+import materialCalcRoutes from './routes/materialCalc';
+import materialPlanningRoutes from './routes/materialPlanning';
+import mrpVersionRoutes from './routes/mrpVersions';
 import historyRoutes from './routes/history';
 import fgStockHistoryRoutes from './routes/fgStockHistory';
 import { startCleanupSchedule, stopCleanupSchedule } from './lib/cleanup';
+import { bootstrapAdmin } from './lib/bootstrapAdmin';
+import multipart from '@fastify/multipart';
 
 const server = Fastify({
   bodyLimit: 52428800, // 50MB
+  // Di belakang Traefik (Dokploy), koneksi TCP datang dari container Traefik.
+  // Tanpa trustProxy, request.ip berisi IP Traefik untuk SEMUA user, sehingga
+  // rate limit menjadi satu kuota bersama seluruh perusahaan (dan 429 muncul
+  // acak). Aman di sini karena port API tidak dipublikasikan ke host.
+  trustProxy: true,
   logger: {
     level: config.nodeEnv === 'development' ? 'info' : 'warn',
     transport:
@@ -38,9 +53,12 @@ const server = Fastify({
 async function registerPlugins() {
   // CORS
   await server.register(cors, {
-    origin: config.nodeEnv === 'development' ? true : config.corsOrigin,
+    origin: config.nodeEnv === 'development' ? true : config.corsOrigins,
     credentials: true,
   });
+
+  // Cookie — dipakai untuk menyimpan refresh token sebagai cookie httpOnly.
+  await server.register(cookie);
 
   // Security headers
   await server.register(helmet, {
@@ -60,6 +78,9 @@ async function registerPlugins() {
     timeWindow: '1 minute',
   });
 
+  // Multipart
+  await server.register(multipart);
+
   // API Routes
   await server.register(authRoutes);
   await server.register(itemsRoutes);
@@ -69,6 +90,13 @@ async function registerPlugins() {
   await server.register(trackingRoutes);
   await server.register(usersRoutes);
   await server.register(weeklyScheduleRoutes);
+  await server.register(mrpVersionRoutes);
+  await server.register(hotlistRoutes);
+  await server.register(stockRawMaterialRoutes);
+  await server.register(outstandingPoRoutes);
+  await server.register(npofMaterialsRoutes);
+  await server.register(materialCalcRoutes);
+  await server.register(materialPlanningRoutes);
   await server.register(historyRoutes);
   await server.register(fgStockHistoryRoutes);
 }
@@ -140,13 +168,16 @@ async function start() {
   try {
     await registerPlugins();
 
+    // Buat akun admin pertama bila database masih kosong (lihat lib/bootstrapAdmin.ts).
+    await bootstrapAdmin();
+
     await server.listen({
       port: config.port,
       host: '0.0.0.0',
     });
 
     // Start daily cleanup of old schedule records (>14 days)
-    // startCleanupSchedule(); // Disabled to keep data history
+    startCleanupSchedule();
 
     console.log(`
     🚀 PDITS API Server is running!
